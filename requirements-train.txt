@@ -1,0 +1,11 @@
+pandas>=2.2
+numpy>=1.26
+scikit-learn>=1.5
+matplotlib>=3.8
+pyarrow>=16        # parquet
+joblib>=1.4
+tqdm>=4.66
+# Deep learning
+tensorflow>=2.15
+# Nếu có GPU NVIDIA:
+# tensorflow==2.15.* ;

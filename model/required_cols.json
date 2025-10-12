@@ -1,0 +1,16 @@
+{
+  "cat_cols": [
+    "City",
+    "ZoneName",
+    "RouteId",
+    "Day"
+  ],
+  "num_cols": [
+    "Year",
+    "Month",
+    "Date",
+    "Hour",
+    "DayOfWeek",
+    "HourOfDay"
+  ]
+}
