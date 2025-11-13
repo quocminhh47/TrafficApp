@@ -1,425 +1,246 @@
-import os
-import glob
+#!/usr/bin/env python
+# app_light.py — Streamlit Traffic Forecast App (GRU + Fallback)
+import os, glob, json, pickle
+from pathlib import Path
 from datetime import datetime, timedelta
 
-import streamlit as st
-import pandas as pd
 import numpy as np
-import joblib
-import matplotlib.pyplot as plt
-import seaborn as sns
+import pandas as pd
+import streamlit as st
 import altair as alt
-from sklearn.metrics import mean_squared_error, r2_score
 import tensorflow as tf
 
-# ---------------- Page config ----------------
-st.set_page_config(
-    page_title="Traffic Congestion Prediction",
-    page_icon="🚦",
-    layout="wide",
-    initial_sidebar_state="expanded",
-    menu_items={
-        "Get Help": "https://www.extremelycoolapp.com/help",
-        "Report a bug": "https://www.extremelycoolapp.com/bug",
-        "About": "# This is a header. This is an *extremely* cool app!",
-    },
-)
+# ---------------- CONFIG ----------------
+st.set_page_config(page_title="🚦 Traffic Forecast (GRU + Fallback)", layout="wide")
 
-DATASET_ROOT = "data/processed_ds"
+DATA_ROOT = Path("data/processed_ds")
+MODEL_DIR = Path("model")
 
-# ---------------- Folder-based helpers (không phụ thuộc hive) ----------------
-@st.cache_data(show_spinner=False)
-def list_cities() -> list[str]:
-    if not os.path.isdir(DATASET_ROOT):
+
+# ---------------- HELPERS ----------------
+@st.cache_resource
+def load_models():
+    """Load trained GRU + metadata + scaler"""
+    model = tf.keras.models.load_model(MODEL_DIR / "traffic_seq.keras")
+    with open(MODEL_DIR / "seq_meta.json") as f:
+        meta = json.load(f)
+    with open(MODEL_DIR / "vehicles_scaler.pkl", "rb") as f:
+        scaler = pickle.load(f)
+    routes = meta["routes"]
+    rid2idx = {r: i for i, r in enumerate(routes)}
+    return model, meta, scaler, routes, rid2idx
+
+
+def time_feats(dt: pd.Series):
+    """Encode hour/day-of-week cyclical features"""
+    dt = pd.to_datetime(dt)
+    hour = dt.dt.hour
+    dow = dt.dt.dayofweek
+    return np.c_[np.sin(2 * np.pi * hour / 24), np.cos(2 * np.pi * hour / 24),
+                 np.sin(2 * np.pi * dow / 7), np.cos(2 * np.pi * dow / 7)].astype(np.float32)
+
+
+def _files_for(city, zone=None):
+    if zone in (None, "(All)"):
+        pat = DATA_ROOT / city / "**" / "*.parquet"
+    else:
+        pat = DATA_ROOT / city / zone / "**" / "*.parquet"
+    return sorted(glob.glob(str(pat), recursive=True))
+
+
+@st.cache_data
+def list_cities():
+    if not DATA_ROOT.exists():
         return []
-    cities = [
-        d
-        for d in os.listdir(DATASET_ROOT)
-        if os.path.isdir(os.path.join(DATASET_ROOT, d)) and not d.startswith(".")
-    ]
-    return sorted(cities)
+    return sorted([d for d in os.listdir(DATA_ROOT) if (DATA_ROOT / d).is_dir()])
 
-@st.cache_data(show_spinner=False)
-def list_zones(city: str) -> list[str]:
-    base = os.path.join(DATASET_ROOT, city)
-    if not os.path.isdir(base):
+
+@st.cache_data
+def list_zones(city):
+    base = DATA_ROOT / city
+    if not base.is_dir():
         return []
-    zones = [
-        d
-        for d in os.listdir(base)
-        if os.path.isdir(os.path.join(base, d)) and not d.startswith(".")
-    ]
-    return sorted(zones)
+    return ["(All)"] + sorted([d for d in os.listdir(base) if (base / d).is_dir()])
 
-def _files_for(city: str, zone: str | None) -> list[str]:
-    if not city:
-        return []
-    pattern = (
-        os.path.join(DATASET_ROOT, city, "**", "*.parquet")
-        if not zone or zone == "(All)"
-        else os.path.join(DATASET_ROOT, city, zone, "**", "*.parquet")
-    )
-    return sorted(glob.glob(pattern, recursive=True))
 
-@st.cache_data(show_spinner=False)
-def list_routes(city: str, zone: str | None) -> list[str]:
+@st.cache_data
+def list_routes(city, zone=None):
     files = _files_for(city, zone)
-    if not files:
-        return []
-    # Đọc nhẹ chỉ cột RouteId; file có thể thiếu RouteId -> skip an toàn
     frames = []
     for f in files:
         try:
-            s = pd.read_parquet(f, columns=["RouteId"])
-            frames.append(s)
-        except Exception:
+            frames.append(pd.read_parquet(f, columns=["RouteId"]))
+        except:
             pass
     if not frames:
         return []
-    routes = pd.concat(frames, ignore_index=True)["RouteId"].dropna().astype(str).unique().tolist()
-    return sorted(routes)
+    return sorted(pd.concat(frames)["RouteId"].dropna().astype(str).unique().tolist())
 
-@st.cache_data(show_spinner=False)
-def load_slice(
-    city: str,
-    zone: str | None,
-    routes: list[str] | None,
-    start_dt: datetime | None,
-    end_dt: datetime | None,
-) -> pd.DataFrame:
-    """
-    Đọc parquet theo đường dẫn thư mục /City/Zone/*.parquet.
-    Nếu file thiếu City/ZoneName, tự gán từ tham số.
-    """
+
+def load_slice(city, zone, route_id, start_dt, end_dt):
+    """Load subset of data by route and date range"""
     files = _files_for(city, zone)
-    if not files:
-        return pd.DataFrame(columns=["DateTime","City","ZoneName","RouteId","Vehicles"])
-
     frames = []
     for f in files:
         try:
-            df = pd.read_parquet(f)  # đọc full vì schema có thể khác nhau
-            # Bắt buộc có DateTime & Vehicles
-            if "DateTime" not in df.columns or "Vehicles" not in df.columns:
-                continue
-            # Chuẩn hoá thời gian (có thể đã có tz hoặc không)
-            df["DateTime"] = pd.to_datetime(df["DateTime"], utc=True, errors="coerce")
-            df = df.dropna(subset=["DateTime","Vehicles"])
-
-            # Bổ sung City/ZoneName nếu thiếu trong file
-            if "City" not in df.columns:
-                df["City"] = city
-            if "ZoneName" not in df.columns:
-                df["ZoneName"] = zone if zone and zone != "(All)" else ""
-            if "RouteId" in df.columns:
-                df["RouteId"] = df["RouteId"].astype(str)
-            else:
-                df["RouteId"] = f"{city}-ALL"
-
-            frames.append(df[["DateTime","City","ZoneName","RouteId","Vehicles"]])
-        except Exception:
-            # file lỗi schema -> bỏ qua
-            pass
-
+            df = pd.read_parquet(f)
+            if {"DateTime", "Vehicles", "RouteId"} <= set(df.columns):
+                df["DateTime"] = pd.to_datetime(df["DateTime"], utc=True, errors="coerce")
+                df["Vehicles"] = pd.to_numeric(df["Vehicles"], errors="coerce")
+                df = df.dropna(subset=["DateTime", "Vehicles"])
+                df = df[df["RouteId"].astype(str) == str(route_id)]
+                frames.append(df[["DateTime", "Vehicles", "RouteId"]])
+        except Exception as e:
+            print(f"[WARN] Skip {f}: {e}")
     if not frames:
-        return pd.DataFrame(columns=["DateTime","City","ZoneName","RouteId","Vehicles"])
+        return pd.DataFrame(columns=["DateTime", "Vehicles", "RouteId"])
 
     df = pd.concat(frames, ignore_index=True)
+    df["DateTime"] = pd.to_datetime(df["DateTime"], utc=True, errors="coerce")
+    df = df.dropna(subset=["DateTime", "Vehicles"])
 
-    # Filter thời gian
-    if start_dt is not None:
-        df = df[df["DateTime"] >= pd.Timestamp(start_dt, tz="UTC")]
-    if end_dt is not None:
-        df = df[df["DateTime"] < pd.Timestamp(end_dt, tz="UTC")]
+    if start_dt:
+        start_dt = pd.Timestamp(start_dt, tz="UTC")
+        df = df[df["DateTime"] >= start_dt]
+    if end_dt:
+        end_dt = pd.Timestamp(end_dt, tz="UTC")
+        df = df[df["DateTime"] < end_dt]
 
-    # Filter route
-    if routes:
-        df = df[df["RouteId"].isin(list(map(str, routes)))]
+    return df.sort_values("DateTime").reset_index(drop=True)
 
-    # Bỏ tz cho vẽ nhanh
-    df["DateTime"] = df["DateTime"].dt.tz_convert(None)
 
-    # Ép category để group/plot nhanh
-    for c in ["City","ZoneName","RouteId"]:
-        df[c] = df[c].astype("category")
+# ---------------- FORECAST MODELS ----------------
+def forecast_baseline(route_id, base_date):
+    """Simple seasonal baseline"""
+    st.info(f"📉 Fallback: Seasonal baseline (sin-wave pattern).")
+    next_hours = pd.date_range(pd.Timestamp(base_date) + pd.Timedelta(days=1), periods=24, freq="h")
+    y = 100 + 20 * np.sin(np.linspace(0, 2 * np.pi, 24))
+    return pd.DataFrame({"DateTime": next_hours, "Predicted": y, "RouteId": route_id}), "Baseline"
 
-    # Thêm cột hiển thị
-    if not df.empty:
-        dt = df["DateTime"]
-        df["Year"] = dt.dt.year
-        df["Month"] = dt.dt.month
-        df["Date"] = dt.dt.day
-        df["Hour"] = dt.dt.hour
-        df["Day"] = dt.dt.strftime("%A")
-        df["DayOfWeek"] = dt.dt.dayofweek
-        df["HourOfDay"] = dt.dt.hour
 
-    return df
+def forecast_mlp(route_id, base_date, scaler, routes):
+    """Fallback to MLP if GRU unavailable"""
+    try:
+        mlp = tf.keras.models.load_model(MODEL_DIR / "traffic_mlp.h5")
+        enc = pickle.load(open(MODEL_DIR / "encoder.pkl", "rb"))
+        st.info(f"⚙️ Using fallback model: MLP for route {route_id}.")
+    except Exception as e:
+        st.warning(f"⚠️ Cannot load MLP ({e}), fallback baseline.")
+        return forecast_baseline(route_id, base_date)
 
-# ---------------- Load model (Keras .h5 + sklearn preprocessor) ----------------
-try:
-    keras_model = tf.keras.models.load_model("./model/traffic_mlp.h5")
-    preprocessor = joblib.load("./model/encoder.pkl")
-except Exception as e:
-    st.error(f"Error loading Keras model/preprocessor: {e}")
-    st.stop()
+    next_hours = pd.date_range(pd.Timestamp(base_date) + pd.Timedelta(days=1), periods=24, freq="h")
+    feats = time_feats(next_hours)
+    onehot = np.zeros((24, len(routes)), dtype=np.float32)
+    if route_id in routes:
+        onehot[:, routes.index(route_id)] = 1.0
+    X = np.concatenate([feats, onehot], axis=1)
+    y_scaled = mlp.predict(X)
+    y = scaler.inverse_transform(y_scaled.reshape(-1, 1)).ravel()
 
-# ---------------- Dữ liệu hợp nhất (chỉ dùng cho tab Report) ----------------
-@st.cache_data(show_spinner=False)
-def load_data() -> pd.DataFrame:
-    df = pd.read_parquet(
-        "data/processed/all_cities_hourly.parquet",
-        columns=["DateTime","City","ZoneName","RouteId","Vehicles"],
+    df = pd.DataFrame({"DateTime": next_hours, "Predicted": y, "RouteId": route_id})
+    return df, "MLP"
+
+
+def forecast_gru(route_id, base_date, model, meta, scaler, routes, rid2idx, city, zone):
+    """Forecast using GRU → fallback MLP → fallback baseline"""
+    LB = meta.get("LOOKBACK", 168)
+    HZ = meta.get("HORIZON", 24)
+
+    end_dt = pd.Timestamp(base_date, tz="UTC") + pd.Timedelta(days=1)
+    start_dt = end_dt - pd.Timedelta(hours=LB)
+
+    hist = load_slice(city, zone, route_id, start_dt, end_dt)
+    if hist.empty or len(hist) < LB:
+        st.warning(f"⚠️ Route {route_id}: not enough data (<{LB}h) → fallback MLP.")
+        return forecast_mlp(route_id, base_date, scaler, routes)
+
+    # Clean numeric data
+    hist["Vehicles"] = pd.to_numeric(hist["Vehicles"], errors="coerce")
+    hist = hist.dropna(subset=["Vehicles", "DateTime"])
+
+    # Resample hourly (numeric only)
+    g = (
+        hist.set_index("DateTime")
+        .resample("1h")["Vehicles"]
+        .mean()
+        .dropna()
+        .reset_index()
     )
-    df["DateTime"] = pd.to_datetime(df["DateTime"], utc=True).dt.tz_convert(None)
-    for c in ["City","ZoneName","RouteId"]:
-        df[c] = df[c].astype("category")
-    dt = df["DateTime"]
-    df["Year"] = dt.dt.year
-    df["Month"] = dt.dt.month
-    df["Date"] = dt.dt.day
-    df["Hour"] = dt.dt.hour
-    df["Day"] = dt.dt.strftime("%A")
-    df["DayOfWeek"] = dt.dt.dayofweek
-    df["HourOfDay"] = dt.dt.hour
-    return df
+    g["RouteId"] = route_id
 
-Traffic_prediction = load_data()
+    if len(g) < LB:
+        st.warning(f"⚠️ Route {route_id}: only {len(g)}h → fallback MLP.")
+        return forecast_mlp(route_id, base_date, scaler, routes)
 
-# ---------------- Feature builders & predict ----------------
-def build_rich_feature_df(df: pd.DataFrame) -> pd.DataFrame:
-    out = pd.DataFrame(index=df.index if isinstance(df, pd.DataFrame) else None)
+    # Prepare GRU input
+    try:
+        v = scaler.transform(g[["Vehicles"]].tail(LB)).astype(np.float32)
+        t = time_feats(g["DateTime"].tail(LB))
+        onehot = np.zeros((LB, len(routes)), dtype=np.float32)
+        onehot[:, rid2idx[route_id]] = 1.0
+        X = np.concatenate([v, t, onehot], axis=1)[None, ...]
 
-    if "DateTime" in df:
-        dt = pd.to_datetime(df["DateTime"])
-        out["Year"] = dt.dt.year
-        out["Month"] = dt.dt.month
-        out["Date"] = dt.dt.day
-        out["Hour"] = dt.dt.hour
-        out["DayOfWeek"] = dt.dt.weekday
-        out["HourOfDay"] = dt.dt.hour
-        out["Day"] = dt.dt.day_name()
-    else:
-        for c in ["Year","Month","Date","Hour","DayOfWeek","HourOfDay"]:
-            out[c] = pd.to_numeric(df.get(c, 0), errors="coerce")
-        if "Day" in df:
-            out["Day"] = df["Day"].astype(str)
-        else:
-            dow = pd.to_numeric(out.get("DayOfWeek", 0), errors="coerce").fillna(0).astype(int) % 7
-            day_map_rev = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
-            out["Day"] = [day_map_rev[i] for i in dow]
+        y_scaled = model.predict(X, verbose=0).reshape(-1, 1)
+        y = scaler.inverse_transform(y_scaled).ravel()
+        next_hours = pd.date_range(end_dt, periods=HZ, freq="h")
+        df_fc = pd.DataFrame({"DateTime": next_hours, "Predicted": y, "RouteId": route_id})
+        st.success(f"✅ Forecast route {route_id} using GRU.")
+        return df_fc, "GRU"
+    except Exception as e:
+        st.warning(f"⚠️ GRU failed for {route_id}: {e} → fallback MLP.")
+        return forecast_mlp(route_id, base_date, scaler, routes)
 
-    out["City"] = df.get("City", "Berlin")
-    out["ZoneName"] = df.get("ZoneName", "")
-    out["RouteId"] = df["RouteId"].astype(str) if "RouteId" in df else "Zone0"
-    out["ID"] = pd.to_numeric(df.get("ID", 0), errors="coerce")
 
-    for c in out.columns:
-        if out[c].dtype != object:
-            out[c] = pd.to_numeric(out[c], errors="coerce")
-    return out
-
-def predict_any(df_like: pd.DataFrame) -> np.ndarray:
-    X_rich = build_rich_feature_df(df_like)
-    needed = ["City","ZoneName","RouteId","Year","Month","Date","Hour","DayOfWeek","HourOfDay","Day"]
-    for c in needed:
-        if c not in X_rich.columns:
-            X_rich[c] = "" if c in ["City","ZoneName","RouteId","Day"] else 0
-    X_infer = X_rich[needed].copy()
-    X_arr = preprocessor.transform(X_infer)
-    yhat = keras_model.predict(X_arr, verbose=0).reshape(-1)
-    return yhat
-
-# ---------------- Main UI ----------------
+# ---------------- STREAMLIT UI ----------------
 def main():
-    st.title("Traffic Congestion Prediction")
+    st.title("🚦 Traffic Forecast App (GRU + Fallback)")
 
+    try:
+        MODEL, META, SCALER, ROUTES, RID2IDX = load_models()
+    except Exception as e:
+        st.error(f"Failed to load model: {e}")
+        st.stop()
+
+    # Sidebar
     with st.sidebar:
-        st.title("Menu")
-
-        if st.button("🔄 Reload data"):
-            list_cities.clear()
-            list_zones.clear()
-            list_routes.clear()
-            load_slice.clear()
-            st.experimental_rerun()
-
-        menu = st.radio("Menu", ["Home", "Forecast", "Report", "Dashboard"])
-
-        # Global filters (áp dụng cho Forecast/Dashboard)
+        st.header("Settings")
         cities = list_cities()
         if not cities:
-            st.error("Không tìm thấy dataset trong data/processed_ds.")
+            st.error("No datasets found in data/processed_ds/")
             st.stop()
-        city = st.selectbox("City", options=cities, index=0)
-
-        zones = ["(All)"] + list_zones(city)
-        zone = st.selectbox("Zone/Area", options=zones, index=0)
-
+        city = st.selectbox("City", cities)
+        zones = list_zones(city)
+        zone = st.selectbox("Zone/Area", zones)
         routes = list_routes(city, None if zone == "(All)" else zone)
-        default_routes = routes[: min(10, len(routes))]
-        route_ids = st.multiselect("Route(s)", options=routes, default=default_routes)
-
-        today = pd.Timestamp.utcnow().normalize().to_pydatetime()
-        start_date = st.date_input("Start date", value=(today - timedelta(days=14)).date())
-        end_date = st.date_input("End date (exclusive)", value=today.date())
-
-    if menu == "Home":
-        st.subheader("Home")
-        st.write("Welcome to the Traffic Congestion Prediction App.")
-        st.image("./img/AI-in-transportation.webp", caption="Traffic Congestion")
-
-    elif menu == "Forecast":
-        st.subheader("Hourly Forecast for Next Day")
-
-        # Context (optional)
-        df_ctx = load_slice(
-            city=city,
-            zone=None if zone == "(All)" else zone,
-            routes=route_ids if route_ids else None,
-            start_dt=datetime.combine(start_date, datetime.min.time()),
-            end_dt=datetime.combine(end_date, datetime.min.time()),
-        )
-
-        selected_date = st.date_input("Base date (forecast next day from this date)")
-        next_day = pd.to_datetime(selected_date) + pd.Timedelta(days=1)
-        hours = pd.date_range(next_day.normalize(), periods=24, freq="H")
-
-        frames = []
-        for rid in (route_ids or []):
-            if not df_ctx.empty and "ZoneName" in df_ctx.columns:
-                sub = df_ctx.loc[df_ctx["RouteId"] == rid]
-                zn = sub["ZoneName"].iloc[0] if not sub.empty else (zone if zone != "(All)" else "")
-            else:
-                zn = zone if zone != "(All)" else ""
-            frames.append(pd.DataFrame({
-                "City": city,
-                "ZoneName": zn,
-                "RouteId": rid,
-                "DateTime": hours
-            }))
-
-        if not frames:
-            st.info("No route selected.")
+        if not routes:
+            st.error("No routes found in dataset.")
             st.stop()
 
-        df_next_all = pd.concat(frames, ignore_index=True)
+        route_id = st.selectbox("Route", routes)
+        base_date = st.date_input("Base Date (forecast next 24h)", datetime.utcnow().date() - timedelta(days=1))
 
-        # Dự đoán
-        yhat = predict_any(df_next_all)
-        forecast_df = df_next_all.copy()
-        forecast_df["PredictedVehicles"] = pd.Series(yhat, dtype="float64")
+    # Forecast
+    df_fc, model_used = forecast_gru(route_id, base_date, MODEL, META, SCALER, ROUTES, RID2IDX, city, zone)
 
-        # Biểu đồ
+    # Display
+    if df_fc is not None and not df_fc.empty:
+        st.subheader(f"Forecast for {route_id}")
+        st.write(f"**Model used:** {model_used}")
         chart = (
-            alt.Chart(forecast_df)
+            alt.Chart(df_fc)
             .mark_line(point=True)
             .encode(
-                x=alt.X("DateTime:T", title="Time"),
-                y=alt.Y("PredictedVehicles:Q", title="Predicted Vehicles"),
-                color=alt.Color("RouteId:N", title="Route"),
-                tooltip=[
-                    "City",
-                    "ZoneName",
-                    "RouteId",
-                    "DateTime:T",
-                    alt.Tooltip("PredictedVehicles:Q", format=".0f"),
-                ],
+                x="DateTime:T",
+                y="Predicted:Q",
+                tooltip=["DateTime:T", "Predicted:Q"]
             )
             .interactive()
         )
         st.altair_chart(chart, use_container_width=True)
+        st.dataframe(df_fc.tail(10))
+    else:
+        st.warning("No forecast data available.")
 
-        summary = (
-            forecast_df.groupby(["City","ZoneName","RouteId"], as_index=False)["PredictedVehicles"]
-            .agg(["min","max","mean"]).round(1).reset_index()
-        )
-        st.write("Summary (Vehicles):")
-        st.dataframe(summary)
-
-    elif menu == "Report":
-        st.subheader("Model Report")
-        st.image("./img/4.jpg", caption="Report")
-
-        y_test = pd.to_numeric(Traffic_prediction["Vehicles"], errors="coerce").fillna(0.0).values
-        y_pred = predict_any(Traffic_prediction)
-        y_pred = pd.to_numeric(pd.Series(y_pred), errors="coerce").fillna(0.0).values
-
-        report_df = pd.DataFrame({"Actual": y_test, "Predicted": y_pred})
-        st.write(report_df.head(10))
-
-        mse = mean_squared_error(y_test, y_pred)
-        r2 = r2_score(y_test, y_pred)
-        st.write(f"Mean Squared Error: {mse:.4f}")
-        st.write(f"R-squared: {r2:.4f}")
-
-        plt.figure(figsize=(10, 6))
-        sns.scatterplot(x=y_test, y=y_pred)
-        plt.xlabel("Actual Vehicles")
-        plt.ylabel("Predicted Vehicles")
-        plt.title("Actual vs Predicted Vehicles")
-        st.pyplot(plt)
-
-    elif menu == "Dashboard":
-        st.subheader("Dashboard")
-
-        df_ctx = load_slice(
-            city=city,
-            zone=None if zone == "(All)" else zone,
-            routes=route_ids if route_ids else None,
-            start_dt=datetime.combine(start_date, datetime.min.time()),
-            end_dt=datetime.combine(end_date, datetime.min.time()),
-        )
-        if df_ctx.empty:
-            st.info("No data for selected filters.")
-            st.stop()
-
-        st.image("./img/3.jpeg", caption="Dashboard")
-
-        st.write("### Traffic Volume Over Time")
-        plt.figure(figsize=(12, 6))
-        sns.lineplot(x="DateTime", y="Vehicles", hue="ZoneName", data=df_ctx)
-        plt.title("Traffic Volume Over Time")
-        plt.ylabel("Vehicles / Metric")
-        plt.xlabel("DateTime")
-        plt.xticks(rotation=45)
-        plt.legend(title="Zone")
-        st.pyplot(plt)
-
-        st.write("### Traffic Volume by Zone/Area")
-        plt.figure(figsize=(12, 6))
-        x_col = "ZoneName" if "ZoneName" in df_ctx.columns else ("RouteId" if "RouteId" in df_ctx.columns else None)
-        if x_col:
-            sns.violinplot(x=x_col, y="Vehicles", data=df_ctx)
-            plt.title(f"Traffic Volume by {x_col}")
-            plt.xlabel(x_col)
-            plt.ylabel("Vehicles / Metric")
-            st.pyplot(plt)
-
-        st.write("### Average Traffic Volume by Hour of Day")
-        df_ctx["HourOfDay"] = df_ctx["DateTime"].dt.hour
-        hourly = df_ctx.groupby("HourOfDay")["Vehicles"].mean().reset_index()
-        plt.figure(figsize=(12, 6))
-        sns.barplot(x="HourOfDay", y="Vehicles", data=hourly)
-        plt.title("Average by Hour of Day")
-        plt.xlabel("Hour")
-        plt.ylabel("Average")
-        plt.xticks(range(0, 24))
-        st.pyplot(plt)
-
-        st.write("### Average Traffic Volume by Day of Week")
-        df_ctx["DayName"] = df_ctx["DateTime"].dt.day_name()
-        weekly = (
-            df_ctx.groupby("DayName")["Vehicles"].mean()
-            .reindex(["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"])
-            .reset_index()
-        )
-        plt.figure(figsize=(12, 6))
-        sns.barplot(x="DayName", y="Vehicles", data=weekly)
-        plt.title("Average by Day of Week")
-        plt.xlabel("Day")
-        plt.ylabel("Average")
-        st.pyplot(plt)
 
 if __name__ == "__main__":
     main()
