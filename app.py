@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# app_light.py — Streamlit Traffic Forecast App (GRU + Fallback)
+# app.py — Streamlit Traffic Forecast App (GRU + Fallback)
 import os, glob, json, pickle
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -31,13 +31,21 @@ def load_models():
     return model, meta, scaler, routes, rid2idx
 
 
-def time_feats(dt: pd.Series):
-    """Encode hour/day-of-week cyclical features"""
+def time_feats(dt):
+    """Encode hour/day-of-week cyclical features (works for both Series & DatetimeIndex)."""
     dt = pd.to_datetime(dt)
-    hour = dt.dt.hour
-    dow = dt.dt.dayofweek
-    return np.c_[np.sin(2 * np.pi * hour / 24), np.cos(2 * np.pi * hour / 24),
-                 np.sin(2 * np.pi * dow / 7), np.cos(2 * np.pi * dow / 7)].astype(np.float32)
+    if isinstance(dt, pd.DatetimeIndex):
+        hour = dt.hour
+        dow = dt.dayofweek
+    else:
+        hour = dt.dt.hour
+        dow = dt.dt.dayofweek
+
+    hour_sin = np.sin(2 * np.pi * hour / 24)
+    hour_cos = np.cos(2 * np.pi * hour / 24)
+    dow_sin = np.sin(2 * np.pi * dow / 7)
+    dow_cos = np.cos(2 * np.pi * dow / 7)
+    return np.c_[hour_sin, hour_cos, dow_sin, dow_cos].astype(np.float32)
 
 
 def _files_for(city, zone=None):
@@ -78,7 +86,6 @@ def list_routes(city, zone=None):
 
 
 def load_slice(city, zone, route_id, start_dt, end_dt):
-    """Load subset of data by route and date range"""
     files = _files_for(city, zone)
     frames = []
     for f in files:
@@ -92,22 +99,30 @@ def load_slice(city, zone, route_id, start_dt, end_dt):
                 frames.append(df[["DateTime", "Vehicles", "RouteId"]])
         except Exception as e:
             print(f"[WARN] Skip {f}: {e}")
+
     if not frames:
         return pd.DataFrame(columns=["DateTime", "Vehicles", "RouteId"])
 
     df = pd.concat(frames, ignore_index=True)
-    df["DateTime"] = pd.to_datetime(df["DateTime"], utc=True, errors="coerce")
-    df = df.dropna(subset=["DateTime", "Vehicles"])
 
     if start_dt:
-        start_dt = pd.Timestamp(start_dt, tz="UTC")
-        df = df[df["DateTime"] >= start_dt]
+        start_ts = pd.Timestamp(start_dt)
+        if start_ts.tzinfo is None:
+            start_ts = start_ts.tz_localize("UTC")
+        else:
+            start_ts = start_ts.tz_convert("UTC")
+        df = df[df["DateTime"] >= start_ts]
+
     if end_dt:
-        end_dt = pd.Timestamp(end_dt, tz="UTC")
-        df = df[df["DateTime"] < end_dt]
+        end_ts = pd.Timestamp(end_dt)
+        if end_ts.tzinfo is None:
+            end_ts = end_ts.tz_localize("UTC")
+        else:
+            end_ts = end_ts.tz_convert("UTC")
+        df = df[df["DateTime"] < end_ts]
 
+    df["DateTime"] = df["DateTime"].dt.tz_convert(None)
     return df.sort_values("DateTime").reset_index(drop=True)
-
 
 # ---------------- FORECAST MODELS ----------------
 def forecast_baseline(route_id, base_date):
