@@ -6,97 +6,14 @@ import tensorflow as tf
 import pickle
 import json
 from pathlib import Path
-from modules.data_loader import load_slice
+
+from modules.data_loader import load_slice, list_cities, list_zones, list_routes
 from modules.model_utils import forecast_gru, forecast_mlp
 
-from modules.data_loader import (
-    load_slice,
-    list_cities,
-    list_zones,
-    list_routes,
-)
-from modules.model_utils import forecast_gru, forecast_mlp
+
 # ======================================================
-# # HELPER: Forecast 24h cho 1 ngày cụ thể
-# # ======================================================
-# def forecast_one_day(
-#     route_id,
-#     forecast_date: pd.Timestamp,
-#     city,
-#     zone,
-#     model,
-#     meta,
-#     scaler,
-#     routes_model,
-#     rid2idx,
-# ):
-#     """
-#     Forecast 24h cho ngày forecast_date (00:00 → 24:00).
-#     - base_date_internal = forecast_date - 1 day
-#     - History window = [base_date_internal - LOOKBACK, base_date_internal)
-#     - Nếu history rỗng → dùng MLP/Baseline
-#     - Nếu có history → forecast_24h (GRU ưu tiên, fallback MLP/Baseline)
-#     """
-#     LOOKBACK = int(meta.get("LOOKBACK", 168))
-#     HORIZON = int(meta.get("HORIZON", 24))
-#
-#     forecast_date = pd.Timestamp(forecast_date).normalize()
-#     base_date = forecast_date - pd.Timedelta(days=1)
-#
-#     start_dt = base_date - pd.Timedelta(hours=LOOKBACK)
-#     end_dt = base_date
-#
-#     df_hist = load_slice(
-#         city=city,
-#         zone=None if zone == "(All)" else zone,
-#         routes=[route_id],
-#         start_dt=start_dt,
-#         end_dt=end_dt,
-#     )
-#     #
-#     # st.caption(
-#     #     f"[Forecast {forecast_date.date()}] base_date={base_date.date()}, "
-#     #     f"history=[{start_dt} → {end_dt}) rows={len(df_hist)}"
-#     # )
-#
-#     # Không có history ⇒ bỏ GRU, dùng MLP/Baseline
-#     if df_hist.empty:
-#         df_fc, model_used = forecast_mlp(
-#             route_id=route_id,
-#             base_date=base_date,
-#             scaler=scaler,
-#             routes=routes_model,
-#             horizon=HORIZON,
-#         )
-#     else:
-#         df_fc, model_used = forecast_24h(
-#             route_id=route_id,
-#             base_date=base_date,
-#             model=model,
-#             meta=meta,
-#             scaler=scaler,
-#             routes=routes_model,
-#             rid2idx=rid2idx,
-#             df_hist=df_hist,
-#         )
-#
-#     if df_fc is None or df_fc.empty:
-#         return pd.DataFrame(), model_used
-#
-#     df_fc = df_fc.copy()
-#     df_fc["DateTime"] = pd.to_datetime(df_fc["DateTime"])
-#
-#     # Lọc đúng 24h của forecast_date
-#     next_day = forecast_date + pd.Timedelta(days=1)
-#     df_fc = df_fc[
-#         (df_fc["DateTime"] >= forecast_date)
-#         & (df_fc["DateTime"] < next_day)
-#     ]
-#
-#     df_fc["ForecastDate"] = forecast_date.date()
-#     df_fc["Model"] = model_used
-#     return df_fc, model_used
-
+# HELPER: Forecast 24h cho 1 ngày cụ thể
+# ======================================================
 def forecast_one_day(
     route_id,
     forecast_date: pd.Timestamp,
@@ -111,9 +28,9 @@ def forecast_one_day(
     """
     Forecast 24h cho đúng ngày forecast_date (00:00 → 24:00).
 
-    Quy ước mới & đồng nhất với model_utils:
+    Quy ước:
     - base_date = forecast_date (bắt đầu forecast từ 00:00 ngày đó)
-    - GRU sẽ dùng history window = [base_date - LOOKBACK, base_date)
+    - GRU dùng history window = [base_date - LOOKBACK, base_date)
     - Nếu không đủ history / lỗi → fallback MLP
     - Nếu MLP lỗi → fallback Baseline
     """
@@ -122,7 +39,7 @@ def forecast_one_day(
 
     # Chuẩn hoá ngày dự đoán (00:00)
     forecast_date = pd.Timestamp(forecast_date).normalize()
-    base_date = forecast_date  # ✅ base_date = chính ngày cần dự đoán
+    base_date = forecast_date  # base_date = chính ngày cần dự đoán
 
     # History window dùng cho GRU
     start_dt = base_date - pd.Timedelta(hours=LOOKBACK)
@@ -141,7 +58,7 @@ def forecast_one_day(
     if df_hist.empty:
         df_fc, model_used = forecast_mlp(
             route_id=route_id,
-            base_date=base_date,       # ✅ dự báo từ đúng ngày này
+            base_date=base_date,
             scaler=scaler,
             routes=routes_model,
             horizon=HORIZON,
@@ -150,7 +67,7 @@ def forecast_one_day(
         # Có history ⇒ ưu tiên GRU, nếu GRU fail thì forecast_gru sẽ fallback MLP/Baseline
         df_fc, model_used = forecast_gru(
             route_id=route_id,
-            base_date=base_date,       # ✅ dự báo cho ngày này
+            base_date=base_date,
             model=model,
             meta=meta,
             scaler=scaler,
@@ -276,17 +193,16 @@ def main():
     )
 
     # ======================================================
-    # TAB 1: FORECAST – Today remaining + 7 days (mỗi ngày 1 tab)
+    # TAB 1: FORECAST – Hôm nay (24h) + 7 ngày tới
     # ======================================================
     if tab == "Forecast":
-        st.header("📈 Forecast: phần còn lại hôm nay + 7 ngày kế tiếp")
+        st.header("📈 Forecast: hôm nay (24h) + 7 ngày kế tiếp")
 
-        now = pd.Timestamp.now().round("S")  # thời điểm hiện tại
-        today = now.normalize()              # 00:00 hôm nay
-        end_today = today + pd.Timedelta(days=1)
+        now = pd.Timestamp.now().round("S")
+        today = now.normalize()
 
-        # === 1) Dự đoán phần còn lại của hôm nay ===
-        st.subheader("⏱ Phần còn lại của hôm nay")
+        # === 1) Dự đoán FULL 24h của hôm nay ===
+        st.subheader("📅 Hôm nay (24h forecast)")
 
         df_today_full, model_today = forecast_one_day(
             route_id=route_id,
@@ -301,43 +217,26 @@ def main():
         )
 
         if df_today_full.empty:
-            st.warning("Không tạo được forecast cho hôm nay (GRU/MLP/Baseline đều fail).")
+            st.warning("Không tạo được forecast 24h cho hôm nay (GRU/MLP/Baseline đều fail).")
         else:
             df_today_full = df_today_full.sort_values("DateTime")
-            # phần còn lại: thời điểm > now
-            df_today_rem = df_today_full[df_today_full["DateTime"] > now].copy()
 
-            if df_today_rem.empty:
-                st.info("Hôm nay đã gần/qua hết ngày, không còn giờ nào để dự đoán. Hiển thị full ngày để tham khảo.")
-                chart_today_full = (
-                    alt.Chart(df_today_full)
-                    .mark_line(point=True)
-                    .encode(
-                        x="DateTime:T",
-                        y="PredictedVehicles:Q",
-                        tooltip=["DateTime:T", "PredictedVehicles:Q"],
-                    )
-                    .properties(height=300, title=f"Today {today.date()} (full 24h)")
-                )
-                st.altair_chart(chart_today_full, use_container_width=True)
-                st.write("Summary (hôm nay, full 24h):")
-                st.dataframe(df_today_full["PredictedVehicles"].describe().to_frame().T)
-            else:
-                n_rem = len(df_today_rem)
-                chart_today_rem = (
-                    alt.Chart(df_today_rem)
-                    .mark_line(point=True)
-                    .encode(
-                        x="DateTime:T",
-                        y="PredictedVehicles:Q",
-                        tooltip=["DateTime:T", "PredictedVehicles:Q"],
-                    )
-                    .properties(height=300, title=f"Today {today.date()} (remaining hours)")
-                )
-                st.altair_chart(chart_today_rem, use_container_width=True)
+            st.caption(f"Model used for today: **{model_today}**")
 
-                st.write("Summary (hôm nay, phần còn lại):")
-                st.dataframe(df_today_rem["PredictedVehicles"].describe().to_frame().T)
+            chart_today = (
+                alt.Chart(df_today_full)
+                .mark_line(point=True)
+                .encode(
+                    x="DateTime:T",
+                    y="PredictedVehicles:Q",
+                    tooltip=["DateTime:T", "PredictedVehicles:Q"],
+                )
+                .properties(height=300, title=f"Today {today.date()} (24h)")
+            )
+            st.altair_chart(chart_today, use_container_width=True)
+
+            st.write("Summary (hôm nay, 24h):")
+            st.dataframe(df_today_full["PredictedVehicles"].describe().to_frame().T)
 
         # === 2) Dự đoán 7 ngày tiếp theo – MỖI NGÀY 1 TAB RIÊNG ===
         st.subheader("📅 7 ngày kế tiếp")
@@ -360,7 +259,6 @@ def main():
             )
 
             if df_fc_day.empty:
-                # vẫn lưu để báo lý do trong 1 tab riêng nếu cần, nhưng đơn giản hơn là bỏ qua
                 continue
 
             label = vn_weekday_label(forecast_date)
@@ -392,7 +290,7 @@ def main():
                     st.dataframe(df_day["PredictedVehicles"].describe().to_frame().T)
 
     # ======================================================
-    # TAB 2: COMPARE – MLP vs Actual & GRU vs Actual
+    # TAB 2: COMPARE – MLP vs Actual & GRU vs Actual (chung 1 ngày)
     # ======================================================
     else:  # tab == "Compare"
         st.header("📊 Compare Predicted vs Actual")
@@ -424,6 +322,23 @@ def main():
         HORIZON = int(META.get("HORIZON", 24))
         LOOKBACK = int(META.get("LOOKBACK", 168))
 
+        # --- Chọn 1 ngày chung cho cả MLP & GRU ---
+        min_actual_date = (min_dt + pd.Timedelta(days=1)).date()
+        max_actual_date = max_dt.date()
+
+        report_date = pd.to_datetime(
+            st.date_input(
+                "Report date (áp dụng cho cả MLP & GRU)",
+                value=max_actual_date,
+                min_value=min_actual_date,
+                max_value=max_actual_date,
+                key="cmp_report_date",
+            )
+        )
+
+        day_start = report_date.normalize()
+        day_end = day_start + pd.Timedelta(days=1)
+
         tab_cmp_mlp, tab_cmp_gru = st.tabs(["MLP vs Actual", "GRU vs Actual"])
 
         # ==================================================
@@ -431,23 +346,6 @@ def main():
         # ==================================================
         with tab_cmp_mlp:
             st.subheader("🧠 MLP vs Actual (per-hour)")
-
-            # Actual date để so sánh (phải có ngày hôm trước cho base_date MLP)
-            min_actual_date = (min_dt + pd.Timedelta(days=1)).date()
-            max_actual_date = max_dt.date()
-
-            actual_date_mlp = pd.to_datetime(
-                st.date_input(
-                    "Actual date (MLP)",
-                    value=max_actual_date,
-                    min_value=min_actual_date,
-                    max_value=max_actual_date,
-                    key="cmp_mlp_date",
-                )
-            )
-
-            day_start = actual_date_mlp.normalize()
-            day_end = day_start + pd.Timedelta(days=1)
 
             # --- Actual từ parquet ---
             df_actual = load_slice(
@@ -460,7 +358,7 @@ def main():
 
             if df_actual.empty:
                 st.warning(
-                    f"⚠️ Không tìm thấy actual trong parquet cho ngày {actual_date_mlp.date()}."
+                    f"⚠️ Không tìm thấy actual trong parquet cho ngày {report_date.date()}."
                 )
                 st.stop()
 
@@ -478,12 +376,11 @@ def main():
             )
 
             st.caption(
-                f"[MLP] Actual date: {actual_date_mlp.date()} | actual hourly rows = {len(df_actual)}"
+                f"[MLP] Actual date: {report_date.date()} | actual hourly rows = {len(df_actual)}"
             )
 
             # --- Forecast bằng MLP cho đúng ngày đó ---
-            # MLP dự đoán cho (base_date + 1) → mình muốn dự đoán actual_date_mlp
-            base_date_cmp = day_start  # ✅ dự báo trực tiếp cho ngày này
+            base_date_cmp = day_start  # dự báo cho chính ngày này
 
             df_fc_mlp, model_used_mlp = forecast_mlp(
                 route_id=route_id,
@@ -492,13 +389,6 @@ def main():
                 routes=ROUTES,
                 horizon=HORIZON,
             )
-
-            ...
-            # đoạn filter theo day_start, day_end giữ nguyên
-            df_fc_mlp = df_fc_mlp[
-                (df_fc_mlp["DateTime"] >= day_start)
-                & (df_fc_mlp["DateTime"] < day_end)
-                ]
 
             if df_fc_mlp is None or df_fc_mlp.empty:
                 st.error(
@@ -510,15 +400,15 @@ def main():
             df_fc_mlp["DateTime"] = pd.to_datetime(df_fc_mlp["DateTime"], errors="coerce")
             df_fc_mlp = df_fc_mlp.dropna(subset=["DateTime"])
 
-            # Lọc đúng ngày actual_date_mlp
+            # Lọc đúng ngày report_date
             df_fc_mlp = df_fc_mlp[
                 (df_fc_mlp["DateTime"] >= day_start)
                 & (df_fc_mlp["DateTime"] < day_end)
-                ]
+            ]
 
             if df_fc_mlp.empty:
                 st.warning(
-                    "⚠️ MLP forecast không có timestamp nào rơi đúng trong ngày actual được chọn."
+                    "⚠️ MLP forecast không có timestamp nào rơi đúng trong ngày report được chọn."
                 )
                 st.stop()
 
@@ -536,7 +426,6 @@ def main():
                 )
                 st.stop()
 
-            # Chuẩn bị long format để vẽ
             merged_mlp = merged_mlp.rename(
                 columns={
                     "Vehicles": "Actual",
@@ -564,7 +453,16 @@ def main():
             )
             st.altair_chart(chart_mlp, use_container_width=True)
 
-            # Metrics
+            # --- Bảng chi tiết từng giờ: DateTime - Actual - Predicted - |Error| ---
+            merged_mlp["AbsError"] = (merged_mlp["Predicted"] - merged_mlp["Actual"]).abs()
+
+            st.subheader("📋 Bảng chi tiết (MLP)")
+            st.dataframe(
+                merged_mlp[["DateTime", "Actual", "Predicted", "AbsError"]]
+                .sort_values("DateTime")
+                .reset_index(drop=True)
+            )
+
             from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
             mse = mean_squared_error(merged_mlp["Actual"], merged_mlp["Predicted"])
@@ -577,8 +475,8 @@ def main():
             st.write(f"**R²:** {r2:.3f}")
             st.caption(
                 f"Model used: **{model_used_mlp}** (expected: MLP)  \n"
-                f"Actual date: {actual_date_mlp.date()}  \n"
-                f"Forecast base_date: {base_date_cmp.date()} (MLP dự đoán cho ngày tiếp theo)."
+                f"Report date: {report_date.date()}  \n"
+                f"Forecast base_date: {base_date_cmp.date()} (MLP dự đoán cho chính ngày này)."
             )
 
         # ==================================================
@@ -587,34 +485,18 @@ def main():
         with tab_cmp_gru:
             st.subheader("📉 GRU vs Actual (per-hour, có thể fallback MLP/Baseline)")
 
-            min_actual_date_g = (min_dt + pd.Timedelta(days=1)).date()
-            max_actual_date_g = max_dt.date()
-
-            actual_date_gru = pd.to_datetime(
-                st.date_input(
-                    "Actual date (GRU)",
-                    value=max_actual_date_g,
-                    min_value=min_actual_date_g,
-                    max_value=max_actual_date_g,
-                    key="cmp_gru_date",
-                )
-            )
-
-            day_start_g = actual_date_gru.normalize()
-            day_end_g = day_start_g + pd.Timedelta(days=1)
-
             # --- Actual từ parquet ---
             df_actual_g = load_slice(
                 city=city,
                 zone=None if zone == "(All)" else zone,
                 routes=[route_id],
-                start_dt=day_start_g,
-                end_dt=day_end_g,
+                start_dt=day_start,
+                end_dt=day_end,
             )
 
             if df_actual_g.empty:
                 st.warning(
-                    f"⚠️ Không tìm thấy actual trong parquet cho ngày {actual_date_gru.date()}."
+                    f"⚠️ Không tìm thấy actual trong parquet cho ngày {report_date.date()}."
                 )
                 st.stop()
 
@@ -633,12 +515,12 @@ def main():
             )
 
             st.caption(
-                f"[GRU] Actual date: {actual_date_gru.date()} | actual hourly rows = {len(df_actual_g)}"
+                f"[GRU] Actual date: {report_date.date()} | actual hourly rows = {len(df_actual_g)}"
             )
 
-            # --- Chuẩn bị history cho GRU: 168h trước day_start_g ---
-            hist_start = day_start_g - pd.Timedelta(hours=LOOKBACK)
-            hist_end = day_start_g
+            # --- Chuẩn bị history cho GRU: 168h trước day_start ---
+            hist_start = day_start - pd.Timedelta(hours=LOOKBACK)
+            hist_end = day_start
 
             df_hist = load_slice(
                 city=city,
@@ -650,13 +532,13 @@ def main():
 
             if df_hist.empty:
                 st.warning(
-                    f"⚠️ Không có đủ lịch sử ({LOOKBACK}h) trước ngày {actual_date_gru.date()} → nhiều khả năng GRU sẽ fallback."
+                    f"⚠️ Không có đủ lịch sử ({LOOKBACK}h) trước ngày {report_date.date()} → nhiều khả năng GRU sẽ fallback."
                 )
 
-            # --- Forecast bằng GRU (có thể fallback MLP/Baseline tuỳ hàm forecast_gru) ---
+            # --- Forecast bằng GRU (có thể fallback MLP/Baseline) ---
             df_fc_gru, model_used_gru = forecast_gru(
                 route_id=route_id,
-                base_date=day_start_g,  # dự đoán cho ngày tiếp theo = actual_date_gru
+                base_date=day_start,  # dự báo cho chính ngày report_date
                 model=MODEL,
                 meta=META,
                 scaler=SCALER,
@@ -675,15 +557,15 @@ def main():
             )
             df_fc_gru = df_fc_gru.dropna(subset=["DateTime"])
 
-            # Lọc đúng ngày actual_date_gru
+            # Lọc đúng ngày report_date
             df_fc_gru = df_fc_gru[
-                (df_fc_gru["DateTime"] >= day_start_g)
-                & (df_fc_gru["DateTime"] < day_end_g)
-                ]
+                (df_fc_gru["DateTime"] >= day_start)
+                & (df_fc_gru["DateTime"] < day_end)
+            ]
 
             if df_fc_gru.empty:
                 st.warning(
-                    "⚠️ GRU/MLP/Baseline forecast không có timestamp nào rơi đúng trong ngày actual được chọn."
+                    "⚠️ GRU/MLP/Baseline forecast không có timestamp nào rơi đúng trong ngày report được chọn."
                 )
                 st.stop()
 
@@ -727,6 +609,15 @@ def main():
                 .properties(height=400)
             )
             st.altair_chart(chart_gru, use_container_width=True)
+            # --- Bảng chi tiết từng giờ: DateTime - Actual - Predicted - |Error| ---
+            merged_gru["AbsError"] = (merged_gru["Predicted"] - merged_gru["Actual"]).abs()
+
+            st.subheader("📋 Bảng chi tiết (GRU)")
+            st.dataframe(
+                merged_gru[["DateTime", "Actual", "Predicted", "AbsError"]]
+                .sort_values("DateTime")
+                .reset_index(drop=True)
+            )
 
             from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
@@ -740,8 +631,8 @@ def main():
             st.write(f"**R²:** {r2_g:.3f}")
             st.caption(
                 f"Model used: **{model_used_gru}** (GRU hoặc fallback MLP/Baseline)  \n"
-                f"Actual date: {actual_date_gru.date()}  \n"
-                f"GRU base_date: {day_start_g.date()} (dự đoán cho ngày tiếp theo)."
+                f"Report date: {report_date.date()}  \n"
+                f"GRU base_date: {day_start.date()} (dự đoán cho chính ngày này)."
             )
 
 
