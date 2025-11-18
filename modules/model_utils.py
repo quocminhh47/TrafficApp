@@ -1,17 +1,9 @@
 # modules/model_utils.py
-# Tiện ích dự báo cho MLP + GRU
+# Tiện ích dự báo cho GRU + baseline
 
-from pathlib import Path
-from functools import lru_cache
-
+from pathlib import Path  # nếu không dùng có thể xoá luôn
 import numpy as np
 import pandas as pd
-import tensorflow as tf
-
-
-MODEL_DIR = Path("model")
-MLP_PATH = MODEL_DIR / "traffic_mlp.h5"        # mô hình MLP fallback
-SEQ_MODEL_PATH = MODEL_DIR / "traffic_seq.keras"  # GRU được app load sẵn (không dùng ở đây)
 
 
 # -------------------------------------------------
@@ -45,84 +37,39 @@ def time_feats(dt):
 
     return feats
 
-# -------------------------------------------------
-# Lazy load MLP
-# -------------------------------------------------
-@lru_cache(maxsize=1)
-def _load_mlp_model():
-    if not MLP_PATH.exists():
-        raise FileNotFoundError(f"MLP model not found at {MLP_PATH}")
-    print(f"[MLP] ✅ loaded {MLP_PATH}")
-    model = tf.keras.models.load_model(MLP_PATH)
-    return model
-
 
 # -------------------------------------------------
-# Baseline: constant (cực kỳ đơn giản, chỉ fallback cuối)
+# Baseline fallback (khi GRU không dùng được)
 # -------------------------------------------------
-def forecast_baseline(route_id, base_date, horizon=24, const_value=100.0):
+def _baseline_forecast(route_id, base_date, horizon, hist_df: pd.DataFrame | None = None):
     """
-    Baseline: dự báo hằng số (vd 100 Vehicles) cho horizon giờ.
-    Dùng khi MLP/GRU đều fail.
+    Fallback đơn giản khi GRU không chạy được.
+
+    Logic:
+      - Nếu có hist_df: lấy mean(Vehicles) làm giá trị constant.
+      - Nếu không có gì: PredictedVehicles = 0.
     """
     base_dt = pd.to_datetime(base_date)
     next_hours = pd.date_range(base_dt, periods=horizon, freq="H")
 
-    return pd.DataFrame(
-        {
-            "DateTime": next_hours,
-            "RouteId": route_id,
-            "PredictedVehicles": np.full(horizon, const_value, dtype=float),
-        }
-    ), "Baseline"
-
-
-# -------------------------------------------------
-# MLP: dùng time_feats + one-hot route
-# -------------------------------------------------
-# -------------------------------------------------
-# MLP: dùng 4 time features, KHÔNG one-hot route
-# -------------------------------------------------
-def forecast_mlp(route_id, base_date, scaler, routes=None, horizon=24):
-    """
-    Dự báo bằng MLP:
-    - Input cho MLP: 4 time features (sin/cos(hour), sin/cos(dow))
-    - KHÔNG dùng one-hot route (vì hiện tại chỉ có 1 route I-94-WB)
-    - scaler: vehicles_scaler.pkl (StandardScaler trên Vehicles)
-    - horizon: số giờ muốn dự đoán (mặc định = 24)
-
-    Trả về: (df_forecast, "MLP")
-      df_forecast có cột: DateTime, RouteId, PredictedVehicles
-    """
-    try:
-        mlp = _load_mlp_model()
-    except Exception as e:
-        print(f"[MLP] ❌ load error: {e} → fallback Baseline.")
-        return forecast_baseline(route_id, base_date, horizon=horizon)
-
-    base_dt = pd.to_datetime(base_date)
-    next_hours = pd.date_range(base_dt, periods=horizon, freq="H")
-
-    # 4 time features
-    feats = time_feats(next_hours)  # (horizon, 4)
-
-    try:
-        # MLP output là Vehicles đã được scale
-        y_scaled = mlp.predict(feats, verbose=0).reshape(-1, 1)  # (horizon, 1)
-        # inverse_scale về Vehicles thực tế
-        y = scaler.inverse_transform(y_scaled).reshape(-1)       # (horizon,)
-    except Exception as e:
-        print(f"[MLP] ❌ predict error: {e} → fallback Baseline.")
-        return forecast_baseline(route_id, base_date, horizon=horizon)
+    if hist_df is not None and not hist_df.empty:
+        v = pd.to_numeric(hist_df.get("Vehicles", pd.Series([])), errors="coerce").dropna()
+        if not v.empty:
+            val = float(v.mean())
+        else:
+            val = 0.0
+    else:
+        val = 0.0
 
     df_fc = pd.DataFrame(
         {
             "DateTime": next_hours,
             "RouteId": route_id,
-            "PredictedVehicles": y,
+            "PredictedVehicles": val,
         }
     )
-    return df_fc, "MLP"
+    return df_fc, "Baseline"
+
 
 # -------------------------------------------------
 # GRU: dùng history LOOKBACK giờ trước base_date
@@ -130,7 +77,7 @@ def forecast_mlp(route_id, base_date, scaler, routes=None, horizon=24):
 def forecast_gru(
     route_id,
     base_date,
-    model,       # GRU model (traffic_seq.keras) đã load ở app
+    model,       # GRU model (traffic_seq.keras) đã load ở app / model_manager
     meta: dict,  # seq_meta.json
     scaler,      # vehicles_scaler.pkl
     routes_model,  # list routes trong meta
@@ -138,7 +85,7 @@ def forecast_gru(
     df_hist: pd.DataFrame,
 ):
     """
-    Dự báo 24h bằng GRU, nếu thiếu history / lỗi → fallback MLP, rồi Baseline.
+    Dự báo 24h bằng GRU, nếu thiếu history / lỗi → fallback Baseline.
 
     df_hist: lịch sử đã được app load sẵn (từ parquet), gồm các cột:
              DateTime, RouteId, Vehicles (ít nhất)
@@ -152,21 +99,21 @@ def forecast_gru(
 
     # ---- Lọc đúng route & resample 1h ----
     if df_hist is None or df_hist.empty:
-        print(f"[GRU] No df_hist passed for {route_id} → fallback MLP.")
-        return forecast_mlp(route_id, base_date, scaler, routes_model, horizon=HORIZON)
+        print(f"[GRU] No df_hist passed for {route_id} → fallback Baseline.")
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=None)
 
     g = df_hist[df_hist["RouteId"].astype(str) == str(route_id)].copy()
     if g.empty:
-        print(f"[GRU] No history rows for {route_id} in df_hist → fallback MLP.")
-        return forecast_mlp(route_id, base_date, scaler, routes_model, horizon=HORIZON)
+        print(f"[GRU] No history rows for {route_id} in df_hist → fallback Baseline.")
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=None)
 
     g["DateTime"] = pd.to_datetime(g["DateTime"], errors="coerce")
     g["Vehicles"] = pd.to_numeric(g["Vehicles"], errors="coerce")
     g = g.dropna(subset=["DateTime", "Vehicles"])
 
     if g.empty:
-        print(f"[GRU] History became empty after cleaning for {route_id} → fallback MLP.")
-        return forecast_mlp(route_id, base_date, scaler, routes_model, horizon=HORIZON)
+        print(f"[GRU] History became empty after cleaning for {route_id} → fallback Baseline.")
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=None)
 
     g = (
         g.set_index("DateTime")
@@ -186,11 +133,11 @@ def forecast_gru(
     )
 
     if len(g_hist) < LOOKBACK:
-        # Không đủ history → dùng MLP
+        # Không đủ history → dùng Baseline trên history hiện có
         print(
-            f"[GRU] Route {route_id}: only {len(g_hist)}h (<{LOOKBACK}h) → fallback MLP."
+            f"[GRU] Route {route_id}: only {len(g_hist)}h (<{LOOKBACK}h) → fallback Baseline."
         )
-        return forecast_mlp(route_id, base_date, scaler, routes_model, horizon=HORIZON)
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=g_hist)
 
     # ---- Chuẩn bị input cho GRU giống lúc train ----
     v_raw = g_hist["Vehicles"].values.astype(float)
@@ -204,8 +151,8 @@ def forecast_gru(
         rid_idx = routes.index(str(route_id))
         onehot[:, rid_idx] = 1.0
     except ValueError:
-        print(f"[GRU] route {route_id} not in meta.routes → fallback MLP.")
-        return forecast_mlp(route_id, base_date, scaler, routes_model, horizon=HORIZON)
+        print(f"[GRU] route {route_id} not in meta.routes → fallback Baseline.")
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=g_hist)
 
     X = np.concatenate(
         [v_scaled.reshape(-1, 1), tf_feats, onehot], axis=1
@@ -213,12 +160,16 @@ def forecast_gru(
     X = X[np.newaxis, ...]  # (1, LOOKBACK, features)
 
     # ---- Predict bằng GRU ----
+    if model is None:
+        print(f"[GRU] model is None for {route_id} → fallback Baseline.")
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=g_hist)
+
     try:
         y_scaled = model.predict(X, verbose=0).reshape(-1, 1)  # (HORIZON, 1)
         y = scaler.inverse_transform(y_scaled).reshape(-1)     # (HORIZON,)
     except Exception as e:
-        print(f"[GRU] ❌ predict error for {route_id}: {e} → fallback MLP.")
-        return forecast_mlp(route_id, base_date, scaler, routes_model, horizon=HORIZON)
+        print(f"[GRU] ❌ predict error for {route_id}: {e} → fallback Baseline.")
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=g_hist)
 
     next_hours = pd.date_range(base_dt, periods=HORIZON, freq="H")
 
