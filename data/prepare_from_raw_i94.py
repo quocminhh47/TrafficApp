@@ -3,7 +3,7 @@
 import pandas as pd
 from pathlib import Path
 
-RAW_FILE = Path("data/raw/i94/Metro_Interstate_Traffic_Volume.csv")
+RAW_FILE = Path("data/raw/Minneapolis/Metro_Interstate_Traffic_Volume.csv")
 OUT_DIR = Path("data/processed_ds/Minneapolis/I94")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 

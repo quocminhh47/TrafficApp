@@ -1,111 +1,99 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 from pathlib import Path
 import json
-import pickle
-from typing import Dict, List, Optional
 
-import tensorflow as tf
+import joblib
+from tensorflow.keras.models import load_model
 
 
 @dataclass
 class ModelContext:
-    """Thông tin model cho 1 'family' (I-94, Fremont, ...)."""
-    gru_model: Optional[tf.keras.Model]
+    gru_model: object
     meta: dict
     scaler: object
-    routes_model: List[str]
-    rid2idx: Dict[str, int]
+    routes_model: list
+    rid2idx: dict
     lookback: int
     horizon: int
     family_name: str
-    model_dir: Path
 
 
-def _detect_model_dir(city: str, zone: Optional[str]) -> Path:
+def _detect_model_dir(city: str, zone: str | None) -> Path:
     """
     Chọn thư mục model tương ứng với (city, zone).
 
-    Ưu tiên các folder con trong `model/` nếu có file seq_meta.json:
-      - model/{City}_{Zone}/seq_meta.json
-      - model/{City}/seq_meta.json
-
-    Nếu không thấy gì → fallback về thư mục gốc `model/`
-    (giữ nguyên behaviour cũ cho I-94).
+    Ưu tiên:
+      1) Special-case I94: model/I94
+      2) model/<City>_<Zone>  (ví dụ Seattle_FremontBridge)
+      3) model/<City>
+      4) model/ (fallback cuối cùng, nếu còn dùng)
     """
     base = Path("model")
-
     candidates = []
 
-    # Ví dụ: model/Seattle_FremontBridge/
-    if zone and zone != "(All)":
-        norm = f"{city}_{zone}".replace(" ", "_")
+    city_str = (city or "").strip()
+    zone_str = (zone or "").strip() if zone else None
+
+    # 1) Special-case I94
+    if city_str.lower() == "minneapolis" or (zone_str and zone_str.upper() == "I94"):
+        candidates.append(base / "I94")
+
+    # 2) City_Zone
+    if zone_str and zone_str != "(All)":
+        norm = f"{city_str}_{zone_str}".replace(" ", "_")
         candidates.append(base / norm)
 
-    # Ví dụ: model/Seattle/
-    norm_city = city.replace(" ", "_")
-    candidates.append(base / norm_city)
+    # 3) City-only
+    if city_str:
+        candidates.append(base / city_str.replace(" ", "_"))
 
-    # Cuối cùng: thư mục gốc model/
+    # 4) Fallback root
     candidates.append(base)
 
     for d in candidates:
         meta_path = d / "seq_meta.json"
-        if meta_path.exists():
+        scaler_path = d / "vehicles_scaler.pkl"
+        model_path = d / "traffic_seq.keras"
+        if meta_path.exists() and scaler_path.exists() and model_path.exists():
+            print(f"[ModelManager] Using model dir: {d}")
             return d
 
-    # Nếu ngay cả model/ cũng không có meta -> trả về base,
-    # để phần load báo lỗi dễ hiểu.
-    return base
+    raise FileNotFoundError(
+        f"Không tìm thấy model dir hợp lệ cho city={city_str}, zone={zone_str}. "
+        f"Đã thử: {', '.join(str(c) for c in candidates)}"
+    )
 
 
-def load_model_context(city: str, zone: Optional[str]) -> ModelContext:
+def load_model_context(city: str, zone: str | None = None) -> ModelContext:
     """
-    Load GRU + meta + scaler cho city/zone.
-
-    - Nếu không có model riêng cho city/zone, sẽ dùng model/ gốc.
-    - Không động vào behaviour cũ: I-94 vẫn đọc từ model/.
+    Load GRU model + meta + scaler cho (city, zone).
     """
     model_dir = _detect_model_dir(city, zone)
-    family_name = model_dir.name if model_dir.name != "model" else "default"
 
+    # Meta
     meta_path = model_dir / "seq_meta.json"
-    scaler_path = model_dir / "vehicles_scaler.pkl"
-    model_path = model_dir / "traffic_seq.keras"
-
-    if not meta_path.exists():
-        raise FileNotFoundError(
-            f"⚠️ Không tìm thấy meta seq_meta.json cho city={city}, zone={zone} "
-            f"(đã kiểm tra trong {model_dir})."
-        )
-
     with open(meta_path, "r") as f:
         meta = json.load(f)
 
-    routes_model = meta.get("routes", [])
-    if not routes_model:
-        raise FileNotFoundError(
-            f"⚠️ seq_meta.json trong {model_dir} không có key 'routes'."
-        )
-
     lookback = int(meta.get("LOOKBACK", 168))
     horizon = int(meta.get("HORIZON", 24))
+    routes_model = list(meta.get("routes", []))
     rid2idx = {rid: idx for idx, rid in enumerate(routes_model)}
 
-    if not scaler_path.exists():
-        raise FileNotFoundError(
-            f"⚠️ Thiếu scaler vehicles_scaler.pkl trong {model_dir}. Hãy train trước."
-        )
-    with open(scaler_path, "rb") as f:
-        scaler = pickle.load(f)
+    # Scaler (joblib.load đọc được cả pickle lẫn joblib)
+    scaler_path = model_dir / "vehicles_scaler.pkl"
+    scaler = joblib.load(scaler_path)
 
-    gru_model = None
-    if model_path.exists():
-        gru_model = tf.keras.models.load_model(model_path)
-    else:
-        # Không có GRU cũng được, khi đó forecast_gru có thể không được dùng
-        gru_model = None
+    # GRU model
+    model_path = model_dir / "traffic_seq.keras"
+    gru_model = load_model(model_path)
+
+    family_name = model_dir.name
+
+    print(
+        f"[ModelManager] Loaded family='{family_name}' "
+        f"(LOOKBACK={lookback}, HORIZON={horizon}, routes={routes_model})"
+    )
 
     return ModelContext(
         gru_model=gru_model,
@@ -116,5 +104,4 @@ def load_model_context(city: str, zone: Optional[str]) -> ModelContext:
         lookback=lookback,
         horizon=horizon,
         family_name=family_name,
-        model_dir=model_dir,
     )

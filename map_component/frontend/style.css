@@ -1,0 +1,53 @@
+/* Ensure the map takes up the full container */
+body {
+    margin: 0;
+    padding: 0;
+}
+
+#map {
+    /* Streamlit usually puts components in an iframe.
+       We want the map to fill that iframe.
+       Height can be controlled by Streamlit.setFrameHeight
+    */
+    width: 100%;
+    height: 100vh;
+    z-index: 1;
+}
+
+/* Tooltip Styling from your prototype */
+.custom-tooltip {
+    background: white;
+    border: 1px solid #ccc;
+    padding: 5px;
+    border-radius: 4px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    font-size: 13px;
+}
+.info-row {
+    margin-bottom: 2px;
+}
+.info-label {
+    font-weight: bold;
+    color: #333;
+}
+
+/* Marker fix for divIcons */
+.custom-marker-container {
+    background: transparent;
+    border: none;
+}
+
+.reset-view-btn {
+  background: #ffffff;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  margin: 6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.reset-view-btn:hover {
+  background: #f0f0f0;
+}

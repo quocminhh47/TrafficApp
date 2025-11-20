@@ -28,7 +28,7 @@ def load_slice(
     """
     Đọc parquet theo City / Zone / RouteId / time window.
     Trả về DataFrame với cột: DateTime (UTC-naive), RouteId, Vehicles.
-    - city: tên folder con dưới data/processed_ds (vd: "i94")
+    - city: tên folder con dưới data/processed_ds (vd: "Minneapolis")
     - zone: None hoặc "(All)" để lấy toàn bộ, hoặc tên zone cụ thể
     - routes: list route_id (string). Nếu None → không filter.
     - start_dt, end_dt: datetime / string, có thể tz-aware hoặc naive.

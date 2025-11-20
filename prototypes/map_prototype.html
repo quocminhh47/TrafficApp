@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bản đồ Route Prototype</title>
+
+    <!-- 1. Import Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+     integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+     crossorigin=""/>
+
+    <style>
+        /* Reset CSS cơ bản */
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            font-family: Arial, sans-serif;
+        }
+
+        /* Bản đồ full màn hình */
+        #map {
+            height: 100vh;
+            width: 100%;
+        }
+
+        /* Style cho Popup/Tooltip */
+        .custom-tooltip {
+            background: white;
+            border: 1px solid #ccc;
+            padding: 5px;
+            border-radius: 4px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+            font-size: 13px;
+        }
+        .info-row {
+            margin-bottom: 2px;
+        }
+        .info-label {
+            font-weight: bold;
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Container chứa bản đồ -->
+    <div id="map"></div>
+
+    <!-- 2. Import Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+     crossorigin=""></script>
+
+    <script>
+        // --- BƯỚC 1: CHUẨN BỊ DỮ LIỆU (HARD-CODE) ---
+        // Ví dụ một số điểm tại TP. Hồ Chí Minh
+        const routesData = [
+                                  {
+                                    city: "Minneapolis",
+                                    zone: "I94",
+                                    route_id: "I-94-WB",
+                                    name: "I-94 Westbound (Minneapolis)",
+                                    lat: 44.9727,
+                                    lon: -93.2480
+                                  },
+                                  {
+                                    city: "Seattle",
+                                    zone: "FremontBridge",
+                                    route_id: "Fremont-Total",
+                                    name: "Fremont Bridge - Total",
+                                    lat: 47.6510,
+                                    lon: -122.3473
+                                  },
+                                  {
+                                    city: "Seattle",
+                                    zone: "FremontBridge",
+                                    route_id: "Fremont-East",
+                                    name: "Fremont Bridge - East Sidewalk",
+                                    lat: 47.6510,
+                                    lon: -122.3470
+                                  },
+                                  {
+                                    city: "Seattle",
+                                    zone: "FremontBridge",
+                                    route_id: "Fremont-West",
+                                    name: "Fremont Bridge - West Sidewalk",
+                                    lat: 47.6510,
+                                    lon: -122.3476
+                                  }
+                                ];
+
+
+        // --- BƯỚC 2: KHỞI TẠO BẢN ĐỒ ---
+        // Tọa độ trung tâm ban đầu (sẽ bị ghi đè bởi fitBounds sau này)
+        const map = L.map('map').setView([10.7769, 106.6953], 13);
+
+        // Thêm Layer OpenStreetMap (OSM)
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        // Mảng lưu trữ các đối tượng marker để quản lý state (đổi màu)
+        let markersArray = [];
+
+        // --- BƯỚC 3: HÀM TẠO ICON (SVG) ---
+        // Cách này giúp ta không phụ thuộc vào file ảnh png bên ngoài,
+        // dễ dàng đổi màu sắc và kích thước bằng code.
+        function getIcon(isSelected) {
+            // Màu sắc: Đỏ nếu chọn, Xanh dương mặc định
+            const color = isSelected ? '#ff3333' : '#3388ff';
+            // Kích thước: Lớn hơn nếu chọn
+            const size = isSelected ? 40 : 28;
+            // Anchor: Điểm nhọn của marker nằm ở đâu so với tọa độ (giữa đáy)
+            const anchor = [size / 2, size];
+
+            // SVG Marker đơn giản (hình giọt nước)
+            const svgHtml = `
+                <svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="${color}" stroke="white" stroke-width="1.5" xmlns="http://www.w3.org/2000/svg" style="filter: drop-shadow(1px 2px 2px rgba(0,0,0,0.3));">
+                    <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
+                    <circle cx="12" cy="9" r="2.5" fill="white"/>
+                </svg>
+            `;
+
+            return L.divIcon({
+                className: 'custom-marker-container', // Class rỗng để xóa style mặc định box vuông
+                html: svgHtml,
+                iconSize: [size, size],
+                iconAnchor: anchor,
+                popupAnchor: [0, -size] // Popup hiện phía trên đỉnh marker
+            });
+        }
+
+        // --- BƯỚC 4: VẼ MARKER VÀ XỬ LÝ SỰ KIỆN ---
+
+        // Tạo một FeatureGroup để gom tất cả marker (dùng cho việc fitBounds)
+        const markersGroup = L.featureGroup();
+
+        routesData.forEach(data => {
+            // 1. Tạo marker với icon mặc định (màu xanh, nhỏ)
+            const marker = L.marker([data.lat, data.lon], {
+                icon: getIcon(false), // false = chưa chọn
+                routeId: data.route_id // Lưu ID vào marker để dùng sau này nếu cần
+            });
+
+            // 2. Tạo nội dung Popup/Tooltip
+            const popupContent = `
+                <div class="info-row"><span class="info-label">Tên:</span> ${data.name}</div>
+                <div class="info-row"><span class="info-label">ID:</span> ${data.route_id}</div>
+                <div class="info-row"><span class="info-label">Khu vực:</span> ${data.zone}</div>
+                <div class="info-row"><span class="info-label">Thành phố:</span> ${data.city}</div>
+            `;
+
+            // 3. Xử lý Hover: Dùng bindTooltip để hiển thị khi hover chuột
+            marker.bindTooltip(popupContent, {
+                direction: 'top',
+                className: 'custom-tooltip',
+                offset: [0, -30]
+            });
+
+            // 4. Xử lý Click
+            marker.on('click', function() {
+                // A. Log ra console
+                console.log(`Clicked route: ${data.route_id}`);
+
+                // B. Reset tất cả marker khác về mặc định (Xanh, Nhỏ)
+                markersArray.forEach(m => {
+                    m.setIcon(getIcon(false));
+                    m.setZIndexOffset(0); // Đưa về lớp hiển thị bình thường
+                });
+
+                // C. Highlight marker hiện tại (Đỏ, To)
+                this.setIcon(getIcon(true));
+                this.setZIndexOffset(1000); // Đưa marker này lên trên cùng để không bị che
+            });
+
+            // Thêm vào mảng quản lý và nhóm feature
+            markersArray.push(marker);
+            markersGroup.addLayer(marker);
+        });
+
+        // Thêm tất cả marker vào bản đồ
+        map.addLayer(markersGroup);
+
+        // --- BƯỚC 5: TỰ ĐỘNG FIT BOUNDS ---
+        // Điều chỉnh zoom và pan để thấy hết tất cả các điểm
+        if (routesData.length > 0) {
+            map.fitBounds(markersGroup.getBounds(), {
+                padding: [50, 50] // Chừa lề 50px để marker không bị sát mép
+            });
+        }
+
+    </script>
+</body>
+</html>

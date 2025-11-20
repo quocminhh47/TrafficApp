@@ -2,14 +2,23 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
+import numpy as np
 
 from modules.data_loader import load_slice, list_cities, list_zones, list_routes
-from modules.model_utils import forecast_gru
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from modules.geo_routes import load_routes_geo
+from map_component import map_routes  # custom map component
+
+from modules.model_utils import (
+    forecast_gru,
+    forecast_week_after_last_point,
+)
 from modules.model_manager import load_model_context
 
 
 # ======================================================
 # HELPER: Forecast 24h cho 1 ngày cụ thể (GRU + fallback nội bộ)
+# (giữ lại nếu cần dùng sau, hiện tại không gọi trực tiếp)
 # ======================================================
 def forecast_one_day(
     route_id,
@@ -22,27 +31,16 @@ def forecast_one_day(
     routes_model,
     rid2idx,
 ):
-    """
-    Forecast 24h cho đúng ngày forecast_date (00:00 → 24:00).
-
-    Quy ước:
-    - base_date = forecast_date (bắt đầu forecast từ 00:00 ngày đó)
-    - GRU dùng history window = [base_date - LOOKBACK, base_date)
-    - forecast_gru sẽ tự xử lý:
-        + Nếu đủ history → dùng GRU
-    """
     LOOKBACK = int(meta.get("LOOKBACK", 168))
-    HORIZON = int(meta.get("HORIZON", 24))
 
     # Chuẩn hoá ngày dự đoán (00:00)
     forecast_date = pd.Timestamp(forecast_date).normalize()
-    base_date = forecast_date  # base_date = chính ngày cần dự đoán
+    base_date = forecast_date
 
     # History window dùng cho GRU
     start_dt = base_date - pd.Timedelta(hours=LOOKBACK)
     end_dt = base_date
 
-    # Lấy history từ parquet
     df_hist = load_slice(
         city=city,
         zone=None if zone == "(All)" else zone,
@@ -51,7 +49,6 @@ def forecast_one_day(
         end_dt=end_dt,
     )
 
-    # Gọi forecast_gru (tự fallback nếu cần)
     df_fc, model_used = forecast_gru(
         route_id=route_id,
         base_date=base_date,
@@ -70,22 +67,18 @@ def forecast_one_day(
     df_fc["DateTime"] = pd.to_datetime(df_fc["DateTime"], errors="coerce")
     df_fc = df_fc.dropna(subset=["DateTime"])
 
-    # Lọc đúng 24h của forecast_date (00:00 → 24:00 cùng ngày)
     next_day = forecast_date + pd.Timedelta(days=1)
     df_fc = df_fc[
         (df_fc["DateTime"] >= forecast_date)
         & (df_fc["DateTime"] < next_day)
     ]
 
-    # Đánh dấu ngày / model (phục vụ UI)
     df_fc["ForecastDate"] = forecast_date.date()
     df_fc["Model"] = model_used
-
     return df_fc, model_used
 
 
 def vn_weekday_label(dt: pd.Timestamp) -> str:
-    """Trả về label kiểu 'Thứ 6 15/11' hoặc 'Chủ nhật 17/11'."""
     dt = pd.Timestamp(dt)
     wd = dt.weekday()  # 0=Mon ... 6=Sun
     if wd == 6:
@@ -100,44 +93,165 @@ def vn_weekday_label(dt: pd.Timestamp) -> str:
 # ======================================================
 def main():
     st.set_page_config(page_title="Traffic Forecast (Parquet only)", layout="wide")
-
     st.sidebar.title("🚦 Traffic App (Parquet)")
 
-    # ---- 1) Chọn city / zone từ parquet ----
+    # ====================================
+    # 1) APPLY PENDING STATE FROM MAP (TRƯỚC KHI TẠO WIDGET)
+    # ====================================
+    if "pending_city" in st.session_state:
+        st.session_state["city"] = st.session_state["pending_city"]
+        del st.session_state["pending_city"]
+
+    if "pending_zone" in st.session_state:
+        st.session_state["zone"] = st.session_state["pending_zone"]
+        del st.session_state["pending_zone"]
+
+    if "pending_route" in st.session_state:
+        st.session_state["route_id"] = st.session_state["pending_route"]
+        del st.session_state["pending_route"]
+
+    # ====================================
+    # 2) SIDEBAR: CITY / ZONE / ROUTE (STATE SẠCH, KHÔNG INDEX)
+    # ====================================
+
+    # ----- CITY -----
     cities = list_cities()
     if not cities:
         st.error("⚠️ Không tìm thấy thư mục data/processed_ds.")
         return
-    city = st.sidebar.selectbox("City", cities)
 
+    if "city" not in st.session_state:
+        st.session_state["city"] = cities[0]
+
+    city = st.sidebar.selectbox(
+        "City",
+        options=cities,
+        key="city",  # không truyền index, dùng session_state["city"]
+    )
+
+    # ----- ZONE -----
     zones = list_zones(city)
-    zone = st.sidebar.selectbox("Zone", zones)
-
-    # ---- 2) Load model context tương ứng city/zone ----
-    try:
-        ctx = load_model_context(city, None if zone == "(All)" else zone)
-    except FileNotFoundError as e:
-        st.error(str(e))
+    if not zones:
+        st.error("⚠️ Không tìm thấy zone nào cho city này.")
         return
+
+    # nếu zone cũ không còn trong list mới → reset
+    if "zone" not in st.session_state or st.session_state["zone"] not in zones:
+        st.session_state["zone"] = zones[0]
+
+    zone = st.sidebar.selectbox(
+        "Zone",
+        options=zones,
+        key="zone",
+    )
+
+    # ====================================
+    # 3) LOAD MODEL CONTEXT (FALLBACK NẾU city=Seattle, zone=(All))
+    # ====================================
+    zone_for_model = None if zone == "(All)" else zone
+
+    try:
+        ctx = load_model_context(city, zone_for_model)
+    except FileNotFoundError as e:
+        if zone == "(All)":
+            # Không có model tổng cho city → thử từng zone con
+            zones_all = list_zones(city)
+            ctx = None
+            for z in zones_all:
+                if z == "(All)":
+                    continue
+                try:
+                    ctx = load_model_context(city, z)
+                    zone_for_model = z
+                    break
+                except FileNotFoundError:
+                    continue
+
+            if ctx is None:
+                st.error(str(e))
+                return
+            else:
+                st.info(
+                    f"Không có model tổng cho city={city}, zone='(All)'. "
+                    f"Đang dùng model của zone='{zone_for_model}'."
+                )
+        else:
+            st.error(str(e))
+            return
 
     MODEL = ctx.gru_model
     META = ctx.meta
     SCALER = ctx.scaler
     ROUTES_MODEL = ctx.routes_model
-    ROUTES = ROUTES_MODEL
     RID2IDX = ctx.rid2idx
     LOOKBACK = ctx.lookback
     HORIZON = ctx.horizon
+    ROUTES = ROUTES_MODEL
 
-    # ---- 3) Route: lấy trực tiếp từ parquet ----
+    # ====================================
+    # 4) ROUTE SELECTBOX
+    # ====================================
     raw_routes = list_routes(city, None if zone == "(All)" else zone)
     if not raw_routes:
         st.error("⚠️ Không tìm thấy RouteId nào trong parquet cho city/zone này.")
         return
 
-    route_id = st.sidebar.selectbox("Route", raw_routes)
+    if "route_id" not in st.session_state or st.session_state["route_id"] not in raw_routes:
+        st.session_state["route_id"] = raw_routes[0]
 
-    # Đọc full data một lần để biết min/max date
+    st.sidebar.selectbox(
+        "Route",
+        options=raw_routes,
+        key="route_id",
+    )
+
+    route_id = st.session_state["route_id"]
+
+    # ====================================
+    # 5) MAP COMPONENT
+    # ====================================
+    st.subheader("🗺 Routes Map")
+
+    routes_geo_all = load_routes_geo().fillna("")
+
+    df_geo_city = routes_geo_all[routes_geo_all["city"] == city].copy()
+    if df_geo_city.empty:
+        st.info("Không có thông tin geo cho city hiện tại.")
+        routes_data = []
+    else:
+        routes_data = df_geo_city.to_dict("records")
+
+    df_all = routes_geo_all.dropna(subset=["lat", "lon"])
+    all_routes_list = df_all.to_dict("records")
+
+    clicked_route_id = map_routes(
+        routes_data=routes_data,
+        selected_route_id=route_id,
+        all_routes=all_routes_list,
+        key="traffic_map",
+    )
+
+    if clicked_route_id is not None and clicked_route_id != route_id:
+        # Tìm city/zone tương ứng route vừa click
+        row = routes_geo_all[routes_geo_all["route_id"] == clicked_route_id]
+        if not row.empty:
+            clicked_city = row.iloc[0]["city"]
+            clicked_zone = row.iloc[0]["zone"]
+
+            st.session_state["pending_city"] = clicked_city
+            st.session_state["pending_zone"] = clicked_zone
+            st.session_state["pending_route"] = clicked_route_id
+        else:
+            st.session_state["pending_route"] = clicked_route_id
+
+        st.rerun()
+
+    st.write(f"**Đang chọn tuyến:** {route_id}")
+
+
+    # ====================================
+    # 6) LOAD FULL DATA (CHO ROUTE HIỆN TẠI)
+    # ====================================
     df_full = load_slice(
         city=city,
         zone=None if zone == "(All)" else zone,
@@ -166,110 +280,106 @@ def main():
     )
 
     # ======================================================
-    # TAB 1: FORECAST – Hôm nay (24h) + 7 ngày tới
+    # TAB 1: FORECAST – DÙNG TRỰC TIẾP WEEK SAU CỦA DATA (KHÔNG SHIFT SANG 2025)
     # ======================================================
     if tab == "Forecast":
-        st.header("📈 Forecast: hôm nay (24h) + 7 ngày kế tiếp (GRU)")
+        st.subheader("🔮 Forecast – tuần kế tiếp sau dữ liệu gốc (NO SHIFT)")
 
-        now = pd.Timestamp.now().round("S")
-        today = now.normalize()
-
-        # === 1) Dự đoán FULL 24h của hôm nay ===
-        st.subheader("📅 Hôm nay (24h forecast)")
-
-        df_today_full, model_today = forecast_one_day(
+        df_fc_raw, anchor_day_raw = forecast_week_after_last_point(
             route_id=route_id,
-            forecast_date=today,
             city=city,
-            zone=zone,
-            model=MODEL,
-            meta=META,
-            scaler=SCALER,
-            routes_model=ROUTES_MODEL,
-            rid2idx=RID2IDX,
+            zone=None if zone == "(All)" else zone,
+            ctx=ctx,
+            n_days=7,
         )
 
-        if df_today_full.empty:
-            st.warning("Không tạo được forecast 24h cho hôm nay.")
+        if df_fc_raw is None or df_fc_raw.empty:
+            st.warning("Không forecast được (thiếu dữ liệu history).")
         else:
-            df_today_full = df_today_full.sort_values("DateTime")
+            df_fc = df_fc_raw.copy()
+            df_fc["DateTime"] = pd.to_datetime(df_fc["DateTime"], errors="coerce")
+            df_fc = df_fc.dropna(subset=["DateTime"])
 
-            st.caption(f"Model used for today: **{model_today}**")
-
-            chart_today = (
-                alt.Chart(df_today_full)
-                .mark_line(point=True)
-                .encode(
-                    x="DateTime:T",
-                    y="PredictedVehicles:Q",
-                    tooltip=["DateTime:T", "PredictedVehicles:Q"],
-                )
-                .properties(height=300, title=f"Today {today.date()} (24h)")
-            )
-            st.altair_chart(chart_today, use_container_width=True)
-
-            st.write("Summary (hôm nay, 24h):")
-            st.dataframe(df_today_full["PredictedVehicles"].describe().to_frame().T)
-
-        # === 2) Dự đoán 7 ngày tiếp theo – MỖI NGÀY 1 TAB RIÊNG ===
-        st.subheader("📅 7 ngày kế tiếp")
-
-        num_days = 7
-        day_results = []  # (label, df_day, model_used)
-
-        for offset in range(1, num_days + 1):
-            forecast_date = today + pd.Timedelta(days=offset)
-            df_fc_day, model_used = forecast_one_day(
-                route_id=route_id,
-                forecast_date=forecast_date,
-                city=city,
-                zone=zone,
-                model=MODEL,
-                meta=META,
-                scaler=SCALER,
-                routes_model=ROUTES_MODEL,
-                rid2idx=RID2IDX,
+            # Lấy list các ngày (normalize) trong forecast
+            days = (
+                df_fc["DateTime"]
+                .dt.normalize()
+                .drop_duplicates()
+                .sort_values()
+                .tolist()
             )
 
-            if df_fc_day.empty:
-                continue
+            if not days:
+                st.info("Không có ngày nào trong forecast.")
+                return
 
-            label = vn_weekday_label(forecast_date)
-            day_results.append((label, df_fc_day.sort_values("DateTime"), model_used))
+            day_tabs = st.tabs(
+                [vn_weekday_label(d) for d in days]
+            )
 
-        if not day_results:
-            st.warning("❌ Không tạo được forecast cho 7 ngày tới.")
-        else:
-            tab_labels = [lbl for (lbl, _, _) in day_results]
-            tabs = st.tabs(tab_labels)
+            for d, t in zip(days, day_tabs):
+                with t:
+                    day_start = d
+                    day_end = d + pd.Timedelta(days=1)
 
-            for (tab_obj, (label, df_day, model_used)) in zip(tabs, day_results):
-                with tab_obj:
-                    st.markdown(f"### {label}  \nModel: **{model_used}**")
+                    df_day = df_fc[
+                        (df_fc["DateTime"] >= day_start)
+                        & (df_fc["DateTime"] < day_end)
+                    ].copy()
 
-                    chart_day = (
+                    if df_day.empty:
+                        st.info("Không có forecast cho ngày này.")
+                        continue
+
+                    st.markdown(
+                        f"**Ngày gốc (theo data):** {day_start.strftime('%Y-%m-%d')} "
+                        f"| Anchor (ngày cuối data thật): {anchor_day_raw.date()}"
+                    )
+
+                    chart = (
                         alt.Chart(df_day)
                         .mark_line(point=True)
                         .encode(
-                            x="DateTime:T",
-                            y="PredictedVehicles:Q",
-                            tooltip=["DateTime:T", "PredictedVehicles:Q"],
+                            x=alt.X("DateTime:T", title="Thời gian"),
+                            y=alt.Y("PredictedVehicles:Q", title="Vehicles"),
+                            tooltip=[
+                                alt.Tooltip(
+                                    "DateTime:T",
+                                    title="Thời gian",
+                                    format="%Y-%m-%d %H:%M",
+                                ),
+                                alt.Tooltip(
+                                    "PredictedVehicles:Q",
+                                    title="Vehicles",
+                                    format=".0f",
+                                ),
+                            ],
                         )
-                        .properties(height=320, title=label)
+                        .interactive()
+                        .properties(
+                            height=320,
+                            title=f"Dự báo cho {vn_weekday_label(day_start)} (theo trục thời gian gốc)",
+                        )
                     )
-                    st.altair_chart(chart_day, use_container_width=True)
 
-                    st.write(f"Summary ({label}):")
-                    st.dataframe(df_day["PredictedVehicles"].describe().to_frame().T)
+                    st.altair_chart(chart, use_container_width=True)
+
+                    st.write(
+                        "Min / Max / Mean:",
+                        float(df_day["PredictedVehicles"].min()),
+                        "/",
+                        float(df_day["PredictedVehicles"].max()),
+                        "/",
+                        float(df_day["PredictedVehicles"].mean()),
+                    )
 
     # ======================================================
     # TAB 2: COMPARE – GRU vs Actual
     # ======================================================
-    else:  # "Compare (GRU vs Actual)"
+    else:
         st.header("📊 Compare GRU Predicted vs Actual")
 
-        # --- Load toàn bộ lịch sử cho route để xác định khoảng ngày ---
-        df_all = df_full  # đã load & chuẩn hoá ở trên
+        df_all = df_full
 
         min_dt = df_all["DateTime"].min().normalize()
         max_dt = df_all["DateTime"].max().normalize()
@@ -281,7 +391,6 @@ def main():
         HORIZON = int(META.get("HORIZON", 24))
         LOOKBACK = int(META.get("LOOKBACK", 168))
 
-        # --- Chọn 1 ngày để compare ---
         min_actual_date = (min_dt + pd.Timedelta(days=1)).date()
         max_actual_date = max_dt.date()
 
@@ -298,9 +407,8 @@ def main():
         day_start = report_date.normalize()
         day_end = day_start + pd.Timedelta(days=1)
 
-        st.subheader("📉 GRU vs Actual (per-hour")
+        st.subheader("📉 GRU vs Actual (per-hour)")
 
-        # --- Actual từ parquet ---
         df_actual_g = load_slice(
             city=city,
             zone=None if zone == "(All)" else zone,
@@ -333,7 +441,6 @@ def main():
             f"[GRU] Actual date: {report_date.date()} | actual hourly rows = {len(df_actual_g)}"
         )
 
-        # --- Chuẩn bị history cho GRU: 168h trước day_start ---
         hist_start = day_start - pd.Timedelta(hours=LOOKBACK)
         hist_end = day_start
 
@@ -347,13 +454,12 @@ def main():
 
         if df_hist.empty:
             st.warning(
-                f"⚠️ Không có đủ lịch sử ({LOOKBACK}h) trước ngày {report_date.date()} → nhiều khả năng GRU sẽ fallback."
+                f"⚠️ Không có đủ lịch sử ({LOOKBACK}h) trước ngày {report_date.date()} → GRU có thể fallback."
             )
 
-        # --- Forecast bằng GRU
         df_fc_gru, model_used_gru = forecast_gru(
             route_id=route_id,
-            base_date=day_start,  # dự báo cho chính ngày report_date
+            base_date=day_start,
             model=MODEL,
             meta=META,
             scaler=SCALER,
@@ -372,7 +478,6 @@ def main():
         )
         df_fc_gru = df_fc_gru.dropna(subset=["DateTime"])
 
-        # Lọc đúng ngày report_date
         df_fc_gru = df_fc_gru[
             (df_fc_gru["DateTime"] >= day_start)
             & (df_fc_gru["DateTime"] < day_end)
@@ -384,7 +489,6 @@ def main():
             )
             return
 
-        # --- Merge actual vs predicted ---
         merged_gru = pd.merge(
             df_actual_g,
             df_fc_gru[["DateTime", "PredictedVehicles"]],
@@ -425,7 +529,50 @@ def main():
         )
         st.altair_chart(chart_gru, use_container_width=True)
 
-        # --- Bảng chi tiết & metrics ---
+        actual = merged_gru["Actual"].values.astype(float)
+        pred = merged_gru["Predicted"].values.astype(float)
+
+        mse_g = mean_squared_error(actual, pred)
+        mae_g = mean_absolute_error(actual, pred)
+        r2_g = r2_score(actual, pred)
+        rmse_g = np.sqrt(mse_g)
+
+        mask_nonzero = actual != 0
+        if mask_nonzero.any():
+            mape_g = (
+                np.mean(
+                    np.abs(
+                        (actual[mask_nonzero] - pred[mask_nonzero])
+                        / actual[mask_nonzero]
+                    )
+                )
+                * 100.0
+            )
+        else:
+            mape_g = np.nan
+
+        denom = np.abs(actual) + np.abs(pred)
+        smape_g = (
+            np.mean(
+                2.0 * np.abs(pred - actual) / np.where(denom == 0, 1.0, denom)
+            )
+            * 100.0
+        )
+
+        st.subheader("📌 Evaluation Metrics – GRU vs Actual (per-hour)")
+        st.write(f"**MSE:**   {mse_g:.2f}")
+        st.write(f"**RMSE:**  {rmse_g:.2f}")
+        st.write(f"**MAE:**   {mae_g:.2f}")
+        st.write(f"**MAPE:**  {mape_g:.2f}%")
+        st.write(f"**SMAPE:** {smape_g:.2f}%")
+        st.write(f"**R²:**    {r2_g:.3f}")
+
+        st.caption(
+            f"Model used: **{model_used_gru}**  \n"
+            f"Report date: {report_date.date()}  \n"
+            f"Samples: {len(merged_gru)} (per-hour)"
+        )
+
         merged_gru["AbsError"] = (merged_gru["Predicted"] - merged_gru["Actual"]).abs()
 
         st.subheader("📋 Bảng chi tiết (GRU)")
@@ -433,22 +580,6 @@ def main():
             merged_gru[["DateTime", "Actual", "Predicted", "AbsError"]]
             .sort_values("DateTime")
             .reset_index(drop=True)
-        )
-
-        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-
-        mse_g = mean_squared_error(merged_gru["Actual"], merged_gru["Predicted"])
-        mae_g = mean_absolute_error(merged_gru["Actual"], merged_gru["Predicted"])
-        r2_g = r2_score(merged_gru["Actual"], merged_gru["Predicted"])
-
-        st.subheader("📌 Evaluation Metrics – GRU vs Actual (per-hour)")
-        st.write(f"**MSE:** {mse_g:.2f}")
-        st.write(f"**MAE:** {mae_g:.2f}")
-        st.write(f"**R²:** {r2_g:.3f}")
-        st.caption(
-            f"Model used: **{model_used_gru}** (GRU)  \n"
-            f"Report date: {report_date.date()}  \n"
-            f"GRU base_date: {day_start.date()} (dự đoán cho chính ngày này)."
         )
 
 

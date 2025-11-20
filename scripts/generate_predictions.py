@@ -9,7 +9,7 @@ from modules.model_utils import forecast_gru
 
 
 def main():
-    RAW_CITY = "i94"
+    RAW_CITY = "Minneapolis"
     OUT_PATH = Path("outputs/pred_i94.csv")
 
     # Load raw actual

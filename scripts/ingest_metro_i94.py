@@ -2,8 +2,8 @@
 import pandas as pd
 from pathlib import Path
 
-RAW_PATH = Path("data/raw/i94/Metro_Interstate_Traffic_Volume.csv")
-OUT_DIR = Path("data/processed_ds/i94/I94_main")
+RAW_PATH = Path("data/raw/Minneapolis/Metro_Interstate_Traffic_Volume.csv")
+OUT_DIR = Path("data/processed_ds/Minneapolis/I94")
 OUT_FILE = OUT_DIR / "i94_main.parquet"
 
 

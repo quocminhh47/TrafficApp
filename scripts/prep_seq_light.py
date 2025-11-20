@@ -13,8 +13,8 @@ MODEL_DIR.mkdir(exist_ok=True)
 
 LOOKBACK = 168  # 7 ngày
 HORIZON = 24    # 24h forecast
-CITY = "i94"
-ZONE = "I94_main"
+CITY = "Minneapolis"
+ZONE = "I94"
 
 
 def time_feats(dt: pd.Series):

@@ -1,0 +1,10 @@
+{
+  "LOOKBACK": 168,
+  "HORIZON": 24,
+  "routes": [
+    "I-94-WB",
+    "Fremont-Total",
+    "Fremont-East",
+    "Fremont-West"
+  ]
+}
