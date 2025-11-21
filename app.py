@@ -3,6 +3,8 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 import numpy as np
+from pathlib import Path
+import os
 
 from modules.data_loader import load_slice, list_cities, list_zones, list_routes
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
@@ -12,8 +14,10 @@ from map_component import map_routes  # custom map component
 from modules.model_utils import (
     forecast_gru,
     forecast_week_after_last_point,
+    forecast_lstm,
 )
 from modules.model_manager import load_model_context
+from modules.model_lstm import load_model_lstm
 
 
 # ======================================================
@@ -188,6 +192,13 @@ def main():
     HORIZON = ctx.horizon
     ROUTES = ROUTES_MODEL
 
+    try:
+        ctx_lstm = load_model_lstm(city, None if zone == "(All)" else zone)
+    except FileNotFoundError as e:
+        st.error(str(e))
+        return
+    lstm_model = ctx_lstm.lstm_model
+
     # ====================================
     # 4) ROUTE SELECTBOX
     # ====================================
@@ -270,7 +281,7 @@ def main():
     min_dt = df_full["DateTime"].min()
     max_dt = df_full["DateTime"].max()
 
-    tab = st.sidebar.radio("Tab", ["Forecast", "Compare (GRU vs Actual)"])
+    tab = st.sidebar.radio("Tab", ["Forecast", "Compare (GRU vs Actual)", "Compare (LSTM vs Actual)", "SARIMA"])
 
     st.sidebar.markdown(
         f"**Data range (parquet):** {min_dt.date()} → {max_dt.date()}  \n"
@@ -376,7 +387,7 @@ def main():
     # ======================================================
     # TAB 2: COMPARE – GRU vs Actual
     # ======================================================
-    else:
+    elif tab == "Compare (GRU vs Actual)":  # "Compare (GRU vs Actual)"
         st.header("📊 Compare GRU Predicted vs Actual")
 
         df_all = df_full
@@ -581,6 +592,236 @@ def main():
             .sort_values("DateTime")
             .reset_index(drop=True)
         )
+
+    # ======================================================
+    # TAB 3: COMPARE – LSTM vs Actual
+    # ======================================================
+    elif tab == "Compare (LSTM vs Actual)":  # "Compare (LSTM vs Actual)"
+        st.header("📊 Compare LSTM Predicted vs Actual")
+
+        # --- Load toàn bộ lịch sử cho route để xác định khoảng ngày ---
+        df_all = df_full  # đã load & chuẩn hoá ở trên
+
+        min_dt = df_all["DateTime"].min().normalize()
+        max_dt = df_all["DateTime"].max().normalize()
+
+        if pd.isna(min_dt) or pd.isna(max_dt):
+            st.warning("⚠️ Không xác định được min/max DateTime từ dữ liệu.")
+            return
+
+        HORIZON = int(ctx_lstm.meta.get("HORIZON", 24))
+        LOOKBACK = int(ctx_lstm.meta.get("LOOKBACK", 168))
+
+        # --- Chọn 1 ngày để compare ---
+        min_actual_date = (min_dt + pd.Timedelta(days=1)).date()
+        max_actual_date = max_dt.date()
+
+        report_date = pd.to_datetime(
+            st.date_input(
+                "Report date",
+                value=max_actual_date,
+                min_value=min_actual_date,
+                max_value=max_actual_date,
+                key="cmp_report_date_gru",
+            )
+        )
+
+        day_start = report_date.normalize()
+        day_end = day_start + pd.Timedelta(days=1)
+
+        st.subheader("📉 LSTM vs Actual (per-hour)")
+
+        # --- Actual từ parquet ---
+        df_actual_g = load_slice(
+            city=city,
+            zone=None if zone == "(All)" else zone,
+            routes=[route_id],
+            start_dt=day_start,
+            end_dt=day_end,
+        )
+
+        if df_actual_g.empty:
+            st.warning(
+                f"⚠️ Không tìm thấy actual trong parquet cho ngày {report_date.date()}."
+            )
+            return
+
+        df_actual_g = df_actual_g.copy()
+        df_actual_g["DateTime"] = pd.to_datetime(
+            df_actual_g["DateTime"], errors="coerce"
+        )
+        df_actual_g = df_actual_g.dropna(subset=["DateTime"])
+
+        df_actual_g = (
+            df_actual_g.set_index("DateTime")["Vehicles"]
+            .resample("1H")
+            .mean()
+            .dropna()
+            .reset_index()
+        )
+
+        st.caption(
+            f"[LSTM] Actual date: {report_date.date()} | actual hourly rows = {len(df_actual_g)}"
+        )
+
+        # --- Chuẩn bị history cho LSTM: 168h trước day_start ---
+        hist_start = day_start - pd.Timedelta(hours=LOOKBACK)
+        hist_end = day_start
+
+        df_hist = load_slice(
+            city=city,
+            zone=None if zone == "(All)" else zone,
+            routes=[route_id],
+            start_dt=hist_start,
+            end_dt=hist_end,
+        )
+
+        if df_hist.empty:
+            st.warning(
+                f"⚠️ Không có đủ lịch sử ({LOOKBACK}h) trước ngày {report_date.date()} → nhiều khả năng LSTM sẽ fallback."
+            )
+
+        # --- Forecast bằng LSTM
+        df_fc_lstm, model_used_lstm = forecast_lstm(
+            route_id=route_id,
+            base_date=day_start,  # dự báo cho chính ngày report_date
+            model=lstm_model,
+            meta=ctx_lstm.meta,
+            scaler=ctx_lstm.scaler,
+            routes_model=ctx_lstm.routes_model,
+            rid2idx=ctx_lstm.rid2idx,
+            df_hist=df_hist,
+        )
+
+        if df_fc_lstm is None or df_fc_lstm.empty:
+            st.error("❌ LSTM forecast trả về rỗng (có thể đã fallback & vẫn lỗi).")
+            return
+
+        df_fc_lstm = df_fc_lstm.copy()
+        df_fc_lstm["DateTime"] = pd.to_datetime(
+            df_fc_lstm["DateTime"], errors="coerce"
+        )
+        df_fc_lstm = df_fc_lstm.dropna(subset=["DateTime"])
+
+        # Lọc đúng ngày report_date
+        df_fc_lstm = df_fc_lstm[
+            (df_fc_lstm["DateTime"] >= day_start)
+            & (df_fc_lstm["DateTime"] < day_end)
+            ]
+
+        if df_fc_lstm.empty:
+            st.warning(
+                "⚠️ LSTM forecast không có timestamp nào rơi đúng trong ngày report được chọn."
+            )
+            return
+
+        # --- Merge actual vs predicted ---
+        merged_lstm = pd.merge(
+            df_actual_g,
+            df_fc_lstm[["DateTime", "PredictedVehicles"]],
+            on="DateTime",
+            how="inner",
+        )
+
+        if merged_lstm.empty:
+            st.warning(
+                "⚠️ Không có timestamp trùng giữa actual & predicted trong ngày này."
+            )
+            return
+
+        merged_lstm = merged_lstm.rename(
+            columns={
+                "Vehicles": "Actual",
+                "PredictedVehicles": "Predicted",
+            }
+        )
+
+        long_lstm = merged_lstm.melt(
+            id_vars="DateTime",
+            value_vars=["Actual", "Predicted"],
+            var_name="Type",
+            value_name="Value",
+        )
+
+        chart_lstm = (
+            alt.Chart(long_lstm)
+            .mark_line(point=True)
+            .encode(
+                x="DateTime:T",
+                y="Value:Q",
+                color="Type:N",
+                tooltip=["DateTime:T", "Type:N", "Value:Q"],
+            )
+            .properties(height=400)
+        )
+        st.altair_chart(chart_lstm, use_container_width=True)
+
+        mse_g = mean_squared_error(merged_lstm["Actual"], merged_lstm["Predicted"])
+        mae_g = mean_absolute_error(merged_lstm["Actual"], merged_lstm["Predicted"])
+        r2_g = r2_score(merged_lstm["Actual"], merged_lstm["Predicted"])
+
+        st.subheader("📌 Evaluation Metrics – LSTM vs Actual (per-hour)")
+        st.write(f"**MSE:** {mse_g:.2f}")
+        st.write(f"**MAE:** {mae_g:.2f}")
+        st.write(f"**R²:** {r2_g:.3f}")
+        st.caption(
+            f"Model used: **{model_used_lstm}** (LSTM)  \n"
+            f"Report date: {report_date.date()}  \n"
+            f"LSTM base_date: {day_start.date()} (dự đoán cho chính ngày này)."
+        )
+
+        # --- Bảng chi tiết & metrics ---
+        merged_lstm["AbsError"] = (merged_lstm["Predicted"] - merged_lstm["Actual"]).abs()
+
+        st.subheader("📋 Bảng chi tiết (LSTM)")
+        st.dataframe(
+            merged_lstm[["DateTime", "Actual", "Predicted", "AbsError"]]
+            .sort_values("DateTime")
+            .reset_index(drop=True)
+        )
+
+    # ======================================================
+    # TAB 4: SARIMA
+    # ======================================================
+    else:  # "Compare (LSTM vs Actual)"
+        # Đường dẫn tới file CSV
+        file_path = Path("model/sarima_eval.csv")
+
+        # Đọc CSV vào DataFrame
+        if os.path.exists(file_path):
+            data_sarima = pd.read_csv(file_path)
+
+            st.subheader("📌 SARIMA Forecast Traffic Volume")
+            for idx, row in data_sarima.iterrows():
+                # Chuẩn hóa tên cột
+                data_sarima.columns = [c.strip() for c in data_sarima.columns]
+
+                # Melt dataframe để Altair hiểu dạng long format
+                df_melted = data_sarima.melt(
+                    id_vars="RouteId",
+                    value_vars=["RMSE", "MAE"],
+                    var_name="ErrorType",
+                    value_name="Error"
+                )
+
+                # Vẽ biểu đồ Altair
+                chart = alt.Chart(df_melted).mark_bar().encode(
+                    x=alt.X('RouteId:N', title='RouteId'),
+                    y=alt.Y('Error:Q', title='Error'),
+                    color=alt.Color('ErrorType:N', scale=alt.Scale(range=['#1f77b4', '#ff7f0e'])),
+                    tooltip=['RouteId', 'ErrorType', 'Error']
+                ).properties(
+                    width=700,
+                    height=400,
+                    title='SARIMA Evaluation per Route'
+                ).interactive()  # Cho phép zoom/pan
+
+                # Streamlit hiển thị
+                st.altair_chart(chart)
+
+        else:
+            print("File không tồn tại:", file_path)
+
 
 
 if __name__ == "__main__":
