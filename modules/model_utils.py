@@ -372,3 +372,114 @@ def shift_forecast_to_today(df_fc_raw, anchor_day_raw, target_today=None):
     df_shifted = df_fc_raw.copy()
     df_shifted["DateTime"] = df_shifted["DateTime"] + delta
     return df_shifted
+
+# -------------------------------------------------
+# LSTM: dùng history LOOKBACK giờ trước base_date
+# -------------------------------------------------
+def forecast_lstm(
+    route_id,
+    base_date,
+    model,       # LSTM model (traffic_lstm.keras) đã load
+    meta: dict,  # seq_meta.json
+    scaler,      # vehicles_scaler.pkl
+    routes_model,  # list routes trong meta
+    rid2idx,       # dict route → index (có thể không dùng)
+    df_hist: pd.DataFrame,
+):
+    """
+    Dự báo 24h bằng LSTM, nếu thiếu history / lỗi → fallback Baseline.
+
+    df_hist: lịch sử đã được app load sẵn (từ parquet), gồm các cột:
+             DateTime, RouteId, Vehicles (ít nhất)
+    """
+    LOOKBACK = int(meta.get("LOOKBACK", 168))
+    HORIZON = int(meta.get("HORIZON", 24))
+    routes = list(meta.get("routes", routes_model))
+    n_routes = len(routes)
+
+    base_dt = pd.to_datetime(base_date)
+
+    # ---- Lọc đúng route & resample 1h ----
+    if df_hist is None or df_hist.empty:
+        print(f"[LSTM] No df_hist passed for {route_id} → fallback Baseline.")
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=None)
+
+    g = df_hist[df_hist["RouteId"].astype(str) == str(route_id)].copy()
+    if g.empty:
+        print(f"[LSTM] No history rows for {route_id} in df_hist → fallback Baseline.")
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=None)
+
+    g["DateTime"] = pd.to_datetime(g["DateTime"], errors="coerce")
+    g["Vehicles"] = pd.to_numeric(g["Vehicles"], errors="coerce")
+    g = g.dropna(subset=["DateTime", "Vehicles"])
+
+    if g.empty:
+        print(f"[LSTM] History became empty after cleaning for {route_id} → fallback Baseline.")
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=None)
+
+    g = (
+        g.set_index("DateTime")
+        .resample("1h")["Vehicles"]       # dùng "1h" để tránh FutureWarning
+        .mean()
+        .dropna()
+        .reset_index()
+        .sort_values("DateTime")
+    )
+
+    # ---- Lấy đúng LOOKBACKh trước base_dt ----
+    g_hist = g[g["DateTime"] < base_dt].tail(LOOKBACK)
+
+    print(
+        f"[LSTM] {route_id} hist rows={len(g_hist)} from "
+        f"{g_hist['DateTime'].min()} → {g_hist['DateTime'].max()}"
+    )
+
+    if len(g_hist) < LOOKBACK:
+        # Không đủ history → dùng Baseline trên history hiện có
+        print(
+            f"[LSTM] Route {route_id}: only {len(g_hist)}h (<{LOOKBACK}h) → fallback Baseline."
+        )
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=g_hist)
+
+    # ---- Chuẩn bị input cho LSTM giống lúc train ----
+    v_raw = g_hist["Vehicles"].values.astype(float)
+    v_scaled = scaler.transform(v_raw.reshape(-1, 1)).reshape(-1)  # (LOOKBACK,)
+
+    dt_hist = g_hist["DateTime"]
+    tf_feats = time_feats(dt_hist)  # (LOOKBACK, 4)
+
+    onehot = np.zeros((LOOKBACK, n_routes), dtype=np.float32)
+    try:
+        rid_idx = routes.index(str(route_id))
+        onehot[:, rid_idx] = 1.0
+    except ValueError:
+        print(f"[LSTM] route {route_id} not in meta.routes → fallback Baseline.")
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=g_hist)
+
+    X = np.concatenate(
+        [v_scaled.reshape(-1, 1), tf_feats, onehot], axis=1
+    )  # (LOOKBACK, 1+4+n_routes)
+    X = X[np.newaxis, ...]  # (1, LOOKBACK, features)
+
+    # ---- Predict bằng LSTM ----
+    if model is None:
+        print(f"[LSTM] model is None for {route_id} → fallback Baseline.")
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=g_hist)
+
+    try:
+        y_scaled = model.predict(X, verbose=0).reshape(-1, 1)  # (HORIZON, 1)
+        y = scaler.inverse_transform(y_scaled).reshape(-1)     # (HORIZON,)
+    except Exception as e:
+        print(f"[LSTM] ❌ predict error for {route_id}: {e} → fallback Baseline.")
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=g_hist)
+
+    next_hours = pd.date_range(base_dt, periods=HORIZON, freq="H")
+
+    df_fc = pd.DataFrame(
+        {
+            "DateTime": next_hours,
+            "RouteId": route_id,
+            "PredictedVehicles": y,
+        }
+    )
+    return df_fc, "LSTM"
