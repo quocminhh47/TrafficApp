@@ -8,7 +8,11 @@ from tensorflow.keras.models import load_model
 
 @dataclass
 class ModelContext:
-    gru_model: object
+    # GRU seq model (bắt buộc, vì _detect_model_dir đang chọn theo file GRU)
+    gru_model: object | None
+    # RNN seq model (tuỳ chọn – có thể None nếu chưa train)
+    rnn_model: object | None
+    # Meta & các thông tin đi kèm
     meta: dict
     scaler: object
     routes_model: list
@@ -53,7 +57,7 @@ def _detect_model_dir(city: str, zone: str | None) -> Path:
     for d in candidates:
         meta_path = d / "seq_meta.json"
         scaler_path = d / "vehicles_scaler.pkl"
-        model_path = d / "traffic_seq.keras"
+        model_path = d / "traffic_seq.keras"  # GRU chính
         if meta_path.exists() and scaler_path.exists() and model_path.exists():
             print(f"[ModelManager] Using model dir: {d}")
             return d
@@ -66,7 +70,13 @@ def _detect_model_dir(city: str, zone: str | None) -> Path:
 
 def load_model_context(city: str, zone: str | None = None) -> ModelContext:
     """
-    Load GRU model + meta + scaler cho (city, zone).
+    Load context model cho (city, zone):
+
+    - GRU model:  traffic_seq.keras
+    - RNN model:  traffic_rnn_seq.keras (optional)
+    - meta:       seq_meta.json
+    - scaler:     vehicles_scaler.pkl
+    - routes_model, rid2idx, lookback, horizon, family_name
     """
     model_dir = _detect_model_dir(city, zone)
 
@@ -84,9 +94,22 @@ def load_model_context(city: str, zone: str | None = None) -> ModelContext:
     scaler_path = model_dir / "vehicles_scaler.pkl"
     scaler = joblib.load(scaler_path)
 
-    # GRU model
-    model_path = model_dir / "traffic_seq.keras"
-    gru_model = load_model(model_path)
+    # GRU model (chính) – file cũ: traffic_seq.keras
+    gru_path = model_dir / "traffic_seq.keras"
+    if gru_path.exists():
+        gru_model = load_model(gru_path)
+    else:
+        gru_model = None
+        print(f"[ModelManager] WARNING: Không tìm thấy {gru_path}, gru_model=None.")
+
+    # RNN model (mới, optional) – file: traffic_rnn_seq.keras
+    rnn_path = model_dir / "traffic_rnn_seq.keras"
+    if rnn_path.exists():
+        rnn_model = load_model(rnn_path)
+        print(f"[ModelManager] Loaded RNN model from {rnn_path}")
+    else:
+        rnn_model = None
+        print(f"[ModelManager] INFO: Không có RNN model tại {rnn_path} (optional).")
 
     family_name = model_dir.name
 
@@ -97,6 +120,7 @@ def load_model_context(city: str, zone: str | None = None) -> ModelContext:
 
     return ModelContext(
         gru_model=gru_model,
+        rnn_model=rnn_model,
         meta=meta,
         scaler=scaler,
         routes_model=routes_model,

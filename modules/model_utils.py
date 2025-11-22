@@ -1,5 +1,3 @@
-# modules/model_utils.py
-
 from modules.data_loader import load_slice
 import numpy as np
 import pandas as pd
@@ -38,11 +36,11 @@ def time_feats(dt):
 
 
 # -------------------------------------------------
-# Baseline fallback (khi GRU không dùng được)
+# Baseline fallback (khi GRU/RNN không dùng được)
 # -------------------------------------------------
 def _baseline_forecast(route_id, base_date, horizon, hist_df: pd.DataFrame | None = None):
     """
-    Fallback đơn giản khi GRU không chạy được.
+    Fallback đơn giản khi seq model không chạy được.
 
     Logic:
       - Nếu có hist_df: lấy mean(Vehicles) làm giá trị constant.
@@ -84,7 +82,7 @@ def forecast_gru(
     df_hist: pd.DataFrame,
 ):
     """
-    Dự báo 24h bằng GRU, nếu thiếu history / lỗi → fallback Baseline.
+    Dự báo HORIZON giờ bằng GRU, nếu thiếu history / lỗi → fallback Baseline.
 
     df_hist: lịch sử đã được app load sẵn (từ parquet), gồm các cột:
              DateTime, RouteId, Vehicles (ít nhất)
@@ -182,81 +180,101 @@ def forecast_gru(
     return df_fc, "GRU"
 
 
-def _forecast_seq_model(
-    route_id: str,
+# -------------------------------------------------
+# RNN: dùng history LOOKBACK giờ trước base_date
+# -------------------------------------------------
+def forecast_rnn(
+    route_id,
     base_date,
-    seq_model,
-    model_name: str,          # "GRU" hoặc "RNN"
-    meta: dict,
-    scaler,
-    routes_model: list[str],
-    rid2idx: dict[str, int],
+    model,       # RNN model (traffic_rnn_seq.keras) đã load ở app / model_manager
+    meta: dict,  # seq_meta.json
+    scaler,      # vehicles_scaler.pkl
+    routes_model,  # list routes trong meta
+    rid2idx,       # dict route → index (có thể không dùng)
     df_hist: pd.DataFrame,
 ):
     """
-    Core logic dự báo HORIZON giờ sau base_date bằng 1 model sequence bất kỳ (GRU/RNN).
+    Dự báo HORIZON giờ bằng RNN, pipeline giống GRU.
+    Nếu thiếu history / lỗi → fallback Baseline.
     """
-    if seq_model is None:
-        print(f"[{model_name}] ❌ seq_model is None → fallback MLP.")
-        from modules.model_utils import forecast_mlp  # tránh import vòng
-        return forecast_mlp(route_id, base_date, scaler, routes_model, horizon=meta.get("HORIZON", 24))
-
     LOOKBACK = int(meta.get("LOOKBACK", 168))
     HORIZON = int(meta.get("HORIZON", 24))
+    routes = list(meta.get("routes", routes_model))
+    n_routes = len(routes)
 
+    base_dt = pd.to_datetime(base_date)
+
+    # ---- Lọc đúng route & resample 1h ----
     if df_hist is None or df_hist.empty:
-        print(f"[{model_name}] ❌ empty history → fallback MLP.")
-        from modules.model_utils import forecast_mlp
-        return forecast_mlp(route_id, base_date, scaler, routes_model, horizon=HORIZON)
+        print(f"[RNN] No df_hist passed for {route_id} → fallback Baseline.")
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=None)
 
-    df = df_hist.copy()
-    df["DateTime"] = pd.to_datetime(df["DateTime"], errors="coerce")
-    df = df.dropna(subset=["DateTime"])
+    g = df_hist[df_hist["RouteId"].astype(str) == str(route_id)].copy()
+    if g.empty:
+        print(f"[RNN] No history rows for {route_id} in df_hist → fallback Baseline.")
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=None)
 
-    # Nếu df_hist chứa nhiều route thì filter
-    if "RouteId" in df.columns:
-        df = df[df["RouteId"].astype(str) == str(route_id)]
+    g["DateTime"] = pd.to_datetime(g["DateTime"], errors="coerce")
+    g["Vehicles"] = pd.to_numeric(g["Vehicles"], errors="coerce")
+    g = g.dropna(subset=["DateTime", "Vehicles"])
 
-    if df.empty:
-        print(f"[{model_name}] ❌ no history for route {route_id} → fallback MLP.")
-        from modules.model_utils import forecast_mlp
-        return forecast_mlp(route_id, base_date, scaler, routes_model, horizon=HORIZON)
+    if g.empty:
+        print(f"[RNN] History became empty after cleaning for {route_id} → fallback Baseline.")
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=None)
 
-    base_dt = pd.to_datetime(base_date).normalize()
-    hist_end = base_dt
-    hist_start = hist_end - pd.Timedelta(hours=LOOKBACK)
+    g = (
+        g.set_index("DateTime")
+        .resample("1h")["Vehicles"]
+        .mean()
+        .dropna()
+        .reset_index()
+        .sort_values("DateTime")
+    )
 
-    df = df[(df["DateTime"] >= hist_start) & (df["DateTime"] < hist_end)]
-    if len(df) < LOOKBACK:
-        print(f"[{model_name}] ❌ not enough history len={len(df)} < {LOOKBACK} → fallback MLP.")
-        from modules.model_utils import forecast_mlp
-        return forecast_mlp(route_id, base_date, scaler, routes_model, horizon=HORIZON)
+    # ---- Lấy đúng LOOKBACKh trước base_dt ----
+    g_hist = g[g["DateTime"] < base_dt].tail(LOOKBACK)
 
-    df = df.sort_values("DateTime")
-    veh = df["Vehicles"].astype(float).values.reshape(-1, 1)
-    veh_scaled = scaler.transform(veh)   # (T, 1)
+    print(
+        f"[RNN] {route_id} hist rows={len(g_hist)} from "
+        f"{g_hist['DateTime'].min()} → {g_hist['DateTime'].max()}"
+    )
 
-    tf_time = time_feats(df["DateTime"])  # (T, 4)
+    if len(g_hist) < LOOKBACK:
+        print(
+            f"[RNN] Route {route_id}: only {len(g_hist)}h (<{LOOKBACK}h) → fallback Baseline."
+        )
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=g_hist)
 
-    n_routes = len(routes_model)
-    onehot = np.zeros((len(df), n_routes), dtype=np.float32)
-    if route_id in rid2idx:
-        j = rid2idx[route_id]
-        onehot[:, j] = 1.0
+    # ---- Chuẩn bị input cho RNN giống lúc train ----
+    v_raw = g_hist["Vehicles"].values.astype(float)
+    v_scaled = scaler.transform(v_raw.reshape(-1, 1)).reshape(-1)
 
-    feats = np.concatenate([veh_scaled, tf_time, onehot], axis=1)  # (T, 1+4+n_routes)
+    dt_hist = g_hist["DateTime"]
+    tf_feats = time_feats(dt_hist)
 
-    # Lấy đúng LOOKBACK cuối
-    feats = feats[-LOOKBACK:, :]
-    X = feats.reshape(1, LOOKBACK, -1)
+    onehot = np.zeros((LOOKBACK, n_routes), dtype=np.float32)
+    try:
+        rid_idx = routes.index(str(route_id))
+        onehot[:, rid_idx] = 1.0
+    except ValueError:
+        print(f"[RNN] route {route_id} not in meta.routes → fallback Baseline.")
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=g_hist)
+
+    X = np.concatenate(
+        [v_scaled.reshape(-1, 1), tf_feats, onehot], axis=1
+    )
+    X = X[np.newaxis, ...]
+
+    if model is None:
+        print(f"[RNN] model is None for {route_id} → fallback Baseline.")
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=g_hist)
 
     try:
-        y_scaled = seq_model.predict(X, verbose=0).reshape(-1)   # (HORIZON,)
-        y = scaler.inverse_transform(y_scaled.reshape(-1, 1)).reshape(-1)
+        y_scaled = model.predict(X, verbose=0).reshape(-1, 1)
+        y = scaler.inverse_transform(y_scaled).reshape(-1)
     except Exception as e:
-        print(f"[{model_name}] ❌ predict error: {e} → fallback MLP.")
-        from modules.model_utils import forecast_mlp
-        return forecast_mlp(route_id, base_date, scaler, routes_model, horizon=HORIZON)
+        print(f"[RNN] ❌ predict error for {route_id}: {e} → fallback Baseline.")
+        return _baseline_forecast(route_id, base_date, HORIZON, hist_df=g_hist)
 
     next_hours = pd.date_range(base_dt, periods=HORIZON, freq="H")
 
@@ -267,12 +285,16 @@ def _forecast_seq_model(
             "PredictedVehicles": y,
         }
     )
-    return df_fc, model_name
+    return df_fc, "RNN"
 
 
-def forecast_week_after_last_point(route_id, city, zone, ctx, n_days=7):
+# -------------------------------------------------
+# Forecast tuần sau NGÀY CUỐI CÙNG trong data thật
+# -------------------------------------------------
+def forecast_week_after_last_point(route_id, city, zone, ctx, n_days=7, model_type="GRU"):
     """
-    Dùng GRU để forecast n_days (mặc định 7) sau NGÀY CUỐI CÙNG trong dữ liệu thật.
+    Dùng seq model (GRU/RNN) để forecast n_days (mặc định 7)
+    sau NGÀY CUỐI CÙNG trong dữ liệu thật.
 
     - Không dịch dữ liệu, forecast trên timeline thật (2012–2018).
     - Trả về:
@@ -302,6 +324,12 @@ def forecast_week_after_last_point(route_id, city, zone, ctx, n_days=7):
 
     all_fc = []
 
+    model_type_norm = (model_type or "GRU").upper()
+    use_rnn = model_type_norm == "RNN" and getattr(ctx, "rnn_model", None) is not None
+
+    if model_type_norm == "RNN" and not use_rnn:
+        print("[forecast_week] RNN được chọn nhưng ctx.rnn_model is None → dùng GRU.")
+
     for k in range(1, n_days + 1):
         # base_date = đầu ngày thứ k sau anchor_day
         base_date = anchor_day_raw + pd.Timedelta(days=k)
@@ -318,16 +346,28 @@ def forecast_week_after_last_point(route_id, city, zone, ctx, n_days=7):
             print(f"[forecast_week] Route {route_id}: thiếu history cho ngày {base_date}, dừng.")
             break
 
-        df_fc_day, model_used = forecast_gru(
-            route_id=route_id,
-            base_date=base_date,
-            model=ctx.gru_model,
-            meta=ctx.meta,
-            scaler=ctx.scaler,
-            routes_model=ctx.routes_model,
-            rid2idx=ctx.rid2idx,
-            df_hist=df_hist,
-        )
+        if use_rnn:
+            df_fc_day, model_used = forecast_rnn(
+                route_id=route_id,
+                base_date=base_date,
+                model=ctx.rnn_model,
+                meta=ctx.meta,
+                scaler=ctx.scaler,
+                routes_model=ctx.routes_model,
+                rid2idx=ctx.rid2idx,
+                df_hist=df_hist,
+            )
+        else:
+            df_fc_day, model_used = forecast_gru(
+                route_id=route_id,
+                base_date=base_date,
+                model=ctx.gru_model,
+                meta=ctx.meta,
+                scaler=ctx.scaler,
+                routes_model=ctx.routes_model,
+                rid2idx=ctx.rid2idx,
+                df_hist=df_hist,
+            )
 
         all_fc.append(df_fc_day)
 
@@ -355,7 +395,6 @@ def shift_forecast_to_today(df_fc_raw, anchor_day_raw, target_today=None):
     - Sau khi shift:
         - anchor_day_raw sẽ map về target_today,
         - nên các forecast (ngày sau anchor_day_raw) sẽ map về target_today+1, target_today+2, ...
-
     """
     if df_fc_raw is None or df_fc_raw.empty:
         return df_fc_raw

@@ -4,31 +4,31 @@
     "zone": "I94",
     "route_id": "I-94-WB",
     "name": "I-94 Westbound (Minneapolis)",
-    "lat": 44.9727,
-    "lon": -93.2480
+    "lat": 44.9614,
+    "lon": -93.2009
   },
   {
     "city": "Seattle",
     "zone": "FremontBridge",
     "route_id": "Fremont Bridge Total",
     "name": "Fremont Bridge Total",
-    "lat": 47.6500,
-    "lon": -122.3470
+    "lat": 47.6476,
+    "lon": -122.3498
   },
   {
     "city": "Seattle",
     "zone": "FremontBridge",
     "route_id": "Fremont Bridge East Sidewalk",
     "name": "Fremont Bridge East Sidewalk",
-    "lat": 47.6501,
-    "lon": -122.3465
+    "lat": 47.6476,
+    "lon": -122.3498
   },
   {
     "city": "Seattle",
     "zone": "FremontBridge",
     "route_id": "Fremont Bridge West Sidewalk",
     "name": "Fremont Bridge West Sidewalk",
-    "lat": 47.6499,
-    "lon": -122.3475
+    "lat": 47.6476,
+    "lon": -122.3498
   }
 ]
