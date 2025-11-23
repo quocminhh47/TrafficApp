@@ -1,7 +1,7 @@
 {
   "city": "Seattle",
   "zone": "FremontBridge",
-  "route_id": "Fremont-Total",
+  "route_id": "Fremont-West",
   "family_name": "Seattle_FremontBridge",
   "eval_start_date": "2017-10-01",
   "eval_end_date": "2018-09-29",

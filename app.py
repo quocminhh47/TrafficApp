@@ -23,76 +23,28 @@ from modules.model_utils import (
 )
 from modules.model_manager import load_model_context
 
+# ARIMA / SARIMA (optional)
+try:
+    from modules.arima_utils import forecast_arima_for_day
+    HAS_ARIMA = True
+except Exception:
+    forecast_arima_for_day = None
+    HAS_ARIMA = False
+
+try:
+    from modules.arima_utils import forecast_sarima_for_day
+    HAS_SARIMA = True
+except Exception:
+    forecast_sarima_for_day = None
+    HAS_SARIMA = False
+
+
 @st.cache_resource
 def get_model_context(city: str, zone: str | None):
     """
     Cache ModelContext cho mỗi (city, zone) để tránh load model nhiều lần.
     """
     return load_model_context(city, zone)
-
-
-
-# ======================================================
-# LSTM artifacts loader (dùng chung cho forecast_one_day)
-# ======================================================
-# @lru_cache(maxsize=None)
-# def load_lstm_artifacts(city: str, zone: str | None):
-#     """
-#     Load LSTM model theo city/zone giống flow GRU/RNN.
-#
-#     Tức là tìm trong:
-#         model/<City>_<Zone>/
-#         model/<City>/
-#         model/
-#
-#     Và trả về:
-#         { "model", "meta", "scaler", "routes", "rid2idx" }
-#     hoặc None nếu không tìm thấy.
-#     """
-#     from pathlib import Path
-#     import json
-#     import joblib
-#     from tensorflow.keras.models import load_model
-#
-#     base = Path("model")
-#     city_str = (city or "").replace(" ", "_")
-#     zone_str = (zone or "").replace(" ", "_") if zone else None
-#
-#     # Build danh sách folder theo thứ tự ưu tiên
-#     candidates = []
-#
-#     if zone_str and zone_str != "(All)":
-#         candidates.append(base / f"{city_str}_{zone_str}")
-#
-#     candidates.append(base / city_str)
-#     candidates.append(base)
-#
-#     for d in candidates:
-#         meta_path = d / "lstm_meta.json"
-#         model_path = d / "traffic_lstm.keras"
-#         scaler_path = d / "vehicles_scaler.pkl"
-#
-#         if meta_path.exists() and model_path.exists() and scaler_path.exists():
-#             print(f"[LSTM] Using model dir: {d}")
-#
-#             meta = json.load(open(meta_path, "r"))
-#             model = load_model(model_path)
-#             scaler = joblib.load(scaler_path)
-#
-#             routes = list(meta.get("routes", []))
-#             rid2idx = {rid: i for i, rid in enumerate(routes)}
-#
-#             return {
-#                 "model": model,
-#                 "meta": meta,
-#                 "scaler": scaler,
-#                 "routes": routes,
-#                 "rid2idx": rid2idx,
-#                 "dir": str(d),
-#             }
-#
-#     print(f"[LSTM] No valid LSTM model found for city={city}, zone={zone}")
-#     return None
 
 
 @lru_cache(maxsize=None)
@@ -383,138 +335,210 @@ def main():
 
     # --------------------------------------------------
     # Apply pending selection từ map (trước khi tạo widget)
+    # if "pending_city" in st.session_state:
+    #     st.session_state["city"] = st.session_state.pop("pending_city")
+    # if "pending_zone" in st.session_state:
+    #     st.session_state["zone"] = st.session_state.pop("pending_zone")
+    # if "pending_route" in st.session_state:
+    #     st.session_state["route_id"] = st.session_state.pop("pending_route")
+
+    # Apply pending selection từ map (trước khi tạo widget)
     if "pending_city" in st.session_state:
         st.session_state["city"] = st.session_state.pop("pending_city")
     if "pending_zone" in st.session_state:
         st.session_state["zone"] = st.session_state.pop("pending_zone")
     if "pending_route" in st.session_state:
-        st.session_state["route_id"] = st.session_state.pop("pending_route")
+        # route từ map → đồng bộ trực tiếp vào widget selectbox "Route"
+        st.session_state["route"] = st.session_state.pop("pending_route")
 
     # ====================================
     # 1) SIDEBAR: CITY / ZONE / ROUTE
     # ====================================
+
+    # ----- CITY -----
     cities = list_cities()
     if not cities:
         st.error("Không tìm thấy city nào trong data/processed_ds.")
         return
 
-    if "city" not in st.session_state:
-        st.session_state["city"] = cities[0]
+    CITY_PLACEHOLDER = "(Chọn city)"
+    city_options = [CITY_PLACEHOLDER] + cities
 
-    city = st.sidebar.selectbox(
+    if "city" not in st.session_state:
+        st.session_state["city"] = CITY_PLACEHOLDER
+
+    city_selected = st.sidebar.selectbox(
         "City",
-        cities,
-        index=cities.index(st.session_state["city"])
-        if st.session_state["city"] in cities
-        else 0,
+        city_options,
         key="city",
     )
 
-    zones = list_zones(city)
-    if "(All)" not in zones:
-        zones = ["(All)"] + zones
+    has_city = city_selected != CITY_PLACEHOLDER
+    current_city = city_selected if has_city else None
 
-    if "zone" not in st.session_state:
-        st.session_state["zone"] = zones[0]
+    # ----- ZONE -----
+    if not has_city:
+        # Chưa chọn city → disable zone
+        zone = st.sidebar.selectbox(
+            "Zone",
+            ["(Chọn city trước)"],
+            key="zone",
+            disabled=True,
+        )
+        current_zone = None
+    else:
+        zones = list_zones(current_city)
 
-    zone = st.sidebar.selectbox(
-        "Zone",
-        zones,
-        index=zones.index(st.session_state["zone"])
-        if st.session_state["zone"] in zones
-        else 0,
-        key="zone",
-    )
+        # Nếu có nhiều zone:
+        #  - đưa "(All)" lên đầu
+        #  - nếu chưa có "(All)" mà >1 zone → thêm "(All)" vào đầu
+        if "(All)" in zones:
+            zones = ["(All)"] + [z for z in zones if z != "(All)"]
+        elif len(zones) > 1:
+            zones = ["(All)"] + zones
+
+        # Default zone:
+        #   - Nếu có "(All)" → chọn "(All)"
+        #   - Nếu chỉ có 1 zone → chọn đúng zone đó
+        if "zone" not in st.session_state or st.session_state["zone"] not in zones:
+            default_zone = "(All)" if "(All)" in zones else zones[0]
+            st.session_state["zone"] = default_zone
+
+        zone = st.sidebar.selectbox(
+            "Zone",
+            zones,
+            key="zone",
+            disabled=False,
+        )
+        current_zone = zone
+    # alias cho phần còn lại của code
+    city = current_city
+    zone = current_zone
 
     # ====================================
     # 2) LOAD MODEL CONTEXT (FALLBACK zone='(All)')
     # ====================================
-    zone_for_model = None if zone == "(All)" else zone
+    # Mặc định: chưa có ctx / model nếu chưa chọn city
+    ctx = None
+    MODEL_GRU = None
+    MODEL_RNN = None
+    META = None
+    SCALER = None
+    ROUTES_MODEL = None
+    RID2IDX = None
+    LOOKBACK = None
+    HORIZON = None
 
-    try:
-        ctx = get_model_context(city, None if zone == "(All)" else zone)
-    except FileNotFoundError as e:
-        if zone == "(All)":
-            zones_all = list_zones(city)
-            ctx = None
-            for z in zones_all:
-                if z == "(All)":
-                    continue
-                try:
-                    ctx = load_model_context(city, z)
-                    zone_for_model = z
-                    break
-                except FileNotFoundError:
-                    continue
+    if has_city:
+        zone_for_model = None if zone == "(All)" else zone
 
-            if ctx is None:
+        try:
+            ctx = get_model_context(city, zone_for_model)
+        except FileNotFoundError as e:
+            if zone == "(All)":
+                zones_all = list_zones(city)
+                ctx = None
+                for z in zones_all:
+                    if z == "(All)":
+                        continue
+                    try:
+                        ctx = load_model_context(city, z)
+                        zone_for_model = z
+                        break
+                    except FileNotFoundError:
+                        continue
+
+                if ctx is None:
+                    st.error(str(e))
+                    return
+                else:
+                    st.info(
+                        f"Không có model tổng cho city={city}, zone='(All)'. "
+                        f"Đang dùng model của zone='{zone_for_model}'."
+                    )
+            else:
                 st.error(str(e))
                 return
-            else:
-                st.info(
-                    f"Không có model tổng cho city={city}, zone='(All)'. "
-                    f"Đang dùng model của zone='{zone_for_model}'."
-                )
-        else:
-            st.error(str(e))
-            return
 
-    # Tách context
-    MODEL_GRU = ctx.gru_model
-    MODEL_RNN = getattr(ctx, "rnn_model", None)
-    META = ctx.meta
-    SCALER = ctx.scaler
-    ROUTES_MODEL = ctx.routes_model
-    RID2IDX = ctx.rid2idx
-    LOOKBACK = ctx.lookback
-    HORIZON = ctx.horizon
+        # Tách context khi đã load được ctx
+        MODEL_GRU = ctx.gru_model
+        MODEL_RNN = getattr(ctx, "rnn_model", None)
+        META = ctx.meta
+        SCALER = ctx.scaler
+        ROUTES_MODEL = ctx.routes_model
+        RID2IDX = ctx.rid2idx
+        LOOKBACK = ctx.lookback
+        HORIZON = ctx.horizon
 
     # ====================================
     # 3) ROUTE (sidebar)
     # ====================================
-    raw_routes = list_routes(city, None if zone == "(All)" else zone)
-    if not raw_routes:
-        st.error("⚠️ Không tìm thấy RouteId nào trong parquet cho city/zone này.")
-        return
+    ROUTE_PLACEHOLDER = "(Chọn route)"
 
-    if "route_id" not in st.session_state:
-        st.session_state["route_id"] = raw_routes[0]
+    # luôn khai báo raw_routes, kể cả khi chưa chọn city
+    raw_routes = []
 
-    if st.session_state["route_id"] not in raw_routes:
-        st.session_state["route_id"] = raw_routes[0]
+    if not has_city:
+        # Chưa chọn city → disable route
+        route_selected = st.sidebar.selectbox(
+            "Route",
+            [ROUTE_PLACEHOLDER],
+            key="route",
+            disabled=True,
+        )
+        route_id = None
+    else:
+        raw_routes = list_routes(city, None if zone == "(All)" else zone)
+        if not raw_routes:
+            st.error("⚠️ Không tìm thấy RouteId nào trong parquet cho city/zone này.")
+            return
 
-    route_id = st.sidebar.selectbox(
-        "Route",
-        raw_routes,
-        index=raw_routes.index(st.session_state["route_id"])
-        if st.session_state["route_id"] in raw_routes
-        else 0,
-        key="route",
-    )
-    st.session_state["route_id"] = route_id
-    route_id = st.session_state["route_id"]
+        route_options = [ROUTE_PLACEHOLDER] + raw_routes
+
+        if "route" not in st.session_state:
+            st.session_state["route"] = ROUTE_PLACEHOLDER
+        elif (
+                st.session_state["route"] != ROUTE_PLACEHOLDER
+                and st.session_state["route"] not in raw_routes
+        ):
+            st.session_state["route"] = ROUTE_PLACEHOLDER
+
+        route_selected = st.sidebar.selectbox(
+            "Route",
+            route_options,
+            key="route",
+            disabled=False,
+        )
+
+        route_id = None if route_selected == ROUTE_PLACEHOLDER else route_selected
 
     # ====================================
     # 4) TOP-2 MODELS (cho ensemble forecast)
     # ====================================
-    summary_top2 = load_top2_summary(ctx.family_name, route_id)
-    if summary_top2 and "top_models" in summary_top2:
-        top_models = summary_top2["top_models"]
+    top_models = []
+
+    # Chỉ load summary khi đã có ctx + đã chọn route
+    if ctx is not None and route_id:
+        summary_top2 = load_top2_summary(ctx.family_name, route_id)
+        if summary_top2 and "top_models" in summary_top2:
+            top_models = summary_top2["top_models"]
+        else:
+            # fallback: nếu không có summary, ưu tiên GRU rồi RNN
+            if ctx.gru_model is not None:
+                top_models.append("GRU")
+            if getattr(ctx, "rnn_model", None) is not None:
+                top_models.append("RNN")
+
+        if not top_models:
+            top_models = ["GRU"]
+
+        st.markdown(
+            f"**Top models (last year, ensemble dùng cho Forecast):** "
+            f"`{', '.join(top_models)}`"
+        )
     else:
-        # fallback: nếu không có summary, ưu tiên GRU rồi RNN
-        top_models = []
-        if ctx.gru_model is not None:
-            top_models.append("GRU")
-        if getattr(ctx, "rnn_model", None) is not None:
-            top_models.append("RNN")
-
-    if not top_models:
-        top_models = ["GRU"]
-
-    st.markdown(
-        f"**Top models (last year, ensemble dùng cho Forecast):** "
-        f"`{', '.join(top_models)}`"
-    )
+        # Chưa chọn city/route → chưa show gì, chỉ map + message "chọn route"
+        pass
 
     # ====================================
     # 5) MAP COMPONENT
@@ -526,12 +550,33 @@ def main():
     df_geo_city = routes_geo_all[routes_geo_all["city"] == city].copy()
     routes_data = df_geo_city.to_dict("records")
 
+    # 🔍 DEBUG: so sánh RouteId parquet vs routes.json
+    routes_parquet = set(raw_routes)
+    routes_geo = set(df_geo_city["route_id"].astype(str).tolist())
+
+    # only_in_parquet = sorted(routes_parquet - routes_geo)
+    # only_in_geo = sorted(routes_geo - routes_parquet)
+
+    # with st.expander("🧪 Debug RouteId (parquet vs routes.json)"):
+    #     st.write("**RouteId trong parquet (sidebar):**", sorted(routes_parquet))
+    #     st.write("**route_id trong routes.json (map):**", sorted(routes_geo))
+    #     if only_in_parquet:
+    #         st.warning(
+    #             f"⚠️ Chỉ có trong parquet, KHÔNG có trong routes.json: {only_in_parquet}"
+    #         )
+    #     if only_in_geo:
+    #         st.warning(
+    #             f"⚠️ Chỉ có trong routes.json, KHÔNG có trong parquet: {only_in_geo}"
+    #         )
+    #     if not only_in_parquet and not only_in_geo:
+    #         st.success("✅ RouteId giữa parquet và routes.json khớp nhau.")
+
     df_all_geo = routes_geo_all.dropna(subset=["lat", "lon"]).copy()
     all_routes_list = df_all_geo.to_dict("records")
 
-    if df_geo_city.empty:
-        st.info("Không có thông tin geo cho city hiện tại.")
-        routes_data = []
+    # if df_geo_city.empty:
+    #     st.info("Không có thông tin geo cho city hiện tại.")
+    #     routes_data = []
 
     clicked_route_id = map_routes(
         routes_data=routes_data,
@@ -545,7 +590,11 @@ def main():
         if clicked_route_id != st.session_state.get("last_clicked_route_id"):
             st.session_state["last_clicked_route_id"] = clicked_route_id
 
-            row = routes_geo_all[routes_geo_all["route_id"] == clicked_route_id]
+            row = routes_geo_all[
+                routes_geo_all["route_id"].str.strip().str.lower()
+                == str(clicked_route_id).strip().lower()
+                ]
+
             if not row.empty:
                 st.session_state["pending_city"] = row.iloc[0]["city"]
                 st.session_state["pending_zone"] = row.iloc[0]["zone"]
@@ -554,8 +603,15 @@ def main():
                 st.session_state["pending_route"] = clicked_route_id
 
             st.rerun()
+    if route_id:
+        st.write(f"**Đang chọn tuyến:** {route_id}")
+    else:
+        st.write("**Chưa chọn tuyến nào**")
 
-    st.write(f"**Đang chọn tuyến:** {route_id}")
+    # nếu chưa có route thì chỉ show map, không load data/model
+    if not route_id:
+        st.info(" Hãy chọn một tuyến ở sidebar hoặc click vào marker trên bản đồ để xem forecast chi tiết.")
+        return
 
     # ====================================
     # 6) LOAD FULL DATA FOR ROUTE
@@ -589,7 +645,7 @@ def main():
     # ====================================
     # 7) FORECAST – tuần kế tiếp sau dữ liệu gốc (ensemble GRU/RNN)
     # ====================================
-    st.header("🔮 Forecast – tuần kế tiếp sau dữ liệu gốc (NO SHIFT)")
+    st.header(" Forecast – tuần kế tiếp sau dữ liệu gốc (NO SHIFT)")
 
     st.caption(
         "Forecast dùng ensemble các model top-2 (nếu có), ví dụ GRU + RNN. "
@@ -855,174 +911,248 @@ def main():
 
     # ====================================
     # 8) DAILY TRAFFIC – 3 THÁNG GẦN NHẤT
-    #     Actual vs GRU / RNN / LSTM + Metrics tổng 3 tháng
+    #     Actual vs GRU / RNN / LSTM / ARIMA / SARIMA + Metrics tổng 3 tháng
     # ====================================
     st.header("📊 Daily traffic – 3 tháng gần nhất (Actual vs Models)")
 
-    df_full_route = df_full.copy()
-    if not df_full_route.empty:
-        max_dt_norm = df_full_route["DateTime"].max().normalize()
-        start_3m = max_dt_norm - pd.Timedelta(days=90)
+    # Đọc cache do script precompute_daily_3months.py sinh ra:
+    #   model/<family_name>/<route_id>_daily_3months.parquet
+    cache_dir = Path("model") / ctx.family_name
+    cache_path = cache_dir / f"{route_id}_daily_3months.parquet"
 
-        df_last = df_full_route[df_full_route["DateTime"] >= start_3m].copy()
-        df_last["Date"] = df_last["DateTime"].dt.normalize()
+    if not cache_path.exists():
+        st.info(
+            f"⚠️ Chưa tìm thấy file cache daily: {cache_path}. "
+            "Hãy chạy scripts/precompute_daily_3months.py trước, hoặc bật lại chế độ tính trực tiếp trong app."
+        )
+        return
 
-        # ==== Actual daily ====
-        df_daily_actual = (
-            df_last.groupby("Date", as_index=False)["Vehicles"]
-            .sum()
-            .rename(columns={"Vehicles": "DailyActual"})
-            .sort_values("Date")
+    try:
+        df_eval = pd.read_parquet(cache_path)
+    except Exception as ex:
+        st.error(f"Lỗi đọc file cache daily: {ex}")
+        return
+
+    if df_eval is None or df_eval.empty:
+        st.info("File cache daily trống, không có dữ liệu để hiển thị.")
+        return
+
+    # Chuẩn hóa cột Date
+    if "Date" not in df_eval.columns or "DailyActual" not in df_eval.columns:
+        st.warning(
+            "File cache daily không có đủ cột 'Date' / 'DailyActual'. Kiểm tra lại file precompute."
+        )
+        return
+
+    df_eval = df_eval.copy()
+    df_eval["Date"] = pd.to_datetime(df_eval["Date"]).dt.normalize()
+    # ----------------------------------------------------------
+    # Fallback: nếu cache chưa có Daily_ARIMA / Daily_SARIMA,
+    # nhưng app import được ARIMA/SARIMA thì tính bổ sung tại chỗ.
+    # ----------------------------------------------------------
+    dates = df_eval["Date"].dropna().drop_duplicates().sort_values().tolist()
+
+    # ---- Fallback ARIMA ----
+    if HAS_ARIMA and forecast_arima_for_day is not None and "Daily_ARIMA" not in df_eval.columns:
+        records = []
+        for d in dates:
+            day_start = pd.Timestamp(d).normalize()
+            day_end = day_start + pd.Timedelta(days=1)
+
+            try:
+                # theo fix trước đây: forecast_arima_for_day(df_full, day_start)
+                out = forecast_arima_for_day(df_full, day_start)
+                if isinstance(out, tuple):
+                    df_fc_arima = out[0]
+                else:
+                    df_fc_arima = out
+            except Exception as ex:
+                print(f"[Daily-ARIMA] error {day_start.date()}: {ex}")
+                continue
+
+            if df_fc_arima is None or df_fc_arima.empty:
+                continue
+
+            df_a = df_fc_arima.copy()
+            df_a["DateTime"] = pd.to_datetime(df_a["DateTime"], errors="coerce")
+            df_a = df_a.dropna(subset=["DateTime"])
+            df_a = df_a[
+                (df_a["DateTime"] >= day_start)
+                & (df_a["DateTime"] < day_end)
+                ]
+            if df_a.empty:
+                continue
+
+            # tuỳ arima_utils: ưu tiên Pred_ARIMA, fallback PredictedVehicles
+            pred_col = "Pred_ARIMA" if "Pred_ARIMA" in df_a.columns else "PredictedVehicles"
+            if pred_col not in df_a.columns:
+                continue
+
+            v = float(df_a[pred_col].sum())
+            records.append({"Date": day_start, "DailyPred": v})
+
+        if records:
+            df_arima = (
+                pd.DataFrame(records)
+                .groupby("Date", as_index=False)["DailyPred"]
+                .mean()
+                .rename(columns={"DailyPred": "Daily_ARIMA"})
+            )
+            df_eval = df_eval.merge(df_arima, on="Date", how="left")
+
+    # ---- Fallback SARIMA ----
+    if HAS_SARIMA and forecast_sarima_for_day is not None and "Daily_SARIMA" not in df_eval.columns:
+        records = []
+        for d in dates:
+            day_start = pd.Timestamp(d).normalize()
+            day_end = day_start + pd.Timedelta(days=1)
+
+            try:
+                out = forecast_sarima_for_day(df_full, day_start)
+                if isinstance(out, tuple):
+                    df_fc_sarima = out[0]
+                else:
+                    df_fc_sarima = out
+            except Exception as ex:
+                print(f"[Daily-SARIMA] error {day_start.date()}: {ex}")
+                continue
+
+            if df_fc_sarima is None or df_fc_sarima.empty:
+                continue
+
+            df_s = df_fc_sarima.copy()
+            df_s["DateTime"] = pd.to_datetime(df_s["DateTime"], errors="coerce")
+            df_s = df_s.dropna(subset=["DateTime"])
+            df_s = df_s[
+                (df_s["DateTime"] >= day_start)
+                & (df_s["DateTime"] < day_end)
+                ]
+            if df_s.empty:
+                continue
+
+            pred_col = "Pred_SARIMA" if "Pred_SARIMA" in df_s.columns else "PredictedVehicles"
+            if pred_col not in df_s.columns:
+                continue
+
+            v = float(df_s[pred_col].sum())
+            records.append({"Date": day_start, "DailyPred": v})
+
+        if records:
+            df_sarima = (
+                pd.DataFrame(records)
+                .groupby("Date", as_index=False)["DailyPred"]
+                .mean()
+                .rename(columns={"DailyPred": "Daily_SARIMA"})
+            )
+            df_eval = df_eval.merge(df_sarima, on="Date", how="left")
+
+    # ==== Metrics tổng 3 tháng cho từng model (nếu có cột) ====
+    metrics_rows = []
+    for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
+        col_name = f"Daily_{m_name}"
+        if col_name not in df_eval.columns:
+            continue
+        valid = df_eval[["DailyActual", col_name]].dropna()
+        if valid.empty:
+            continue
+
+        actual = valid["DailyActual"].values.astype(float)
+        pred = valid[col_name].values.astype(float)
+
+        mse = mean_squared_error(actual, pred)
+        rmse = np.sqrt(mse)
+        mae = mean_absolute_error(actual, pred)
+
+        if np.any(actual != 0):
+            mape = (
+                np.mean(
+                    np.abs((actual - pred)[actual != 0] / actual[actual != 0])
+                )
+                * 100.0
+            )
+        else:
+            mape = np.nan
+
+        denom = np.abs(actual) + np.abs(pred)
+        smape = (
+            np.mean(
+                2.0 * np.abs(pred - actual) / np.where(denom == 0, 1.0, denom)
+            )
+            * 100.0
         )
 
-        if df_daily_actual.empty:
-            st.info("Không có dữ liệu trong 3 tháng gần nhất.")
-        else:
-            dates = df_daily_actual["Date"].tolist()
-            df_eval = df_daily_actual.set_index("Date")
+        r2 = r2_score(actual, pred)
 
-            # ==== Helper loop dự đoán daily cho 1 model ====
-            def _compute_daily_for_model(model_name: str):
-                if model_name == "GRU" and MODEL_GRU is None:
-                    return None
-                if model_name == "RNN" and MODEL_RNN is None:
-                    return None
-                # LSTM không cần check model ở ctx, vì forecast_one_day sẽ tự fallback
-                records = []
-                for d in dates:
-                    df_fc_day, _used = forecast_one_day(
-                        route_id=route_id,
-                        forecast_date=d,
-                        city=city,
-                        zone=zone,
-                        ctx=ctx,
-                        seq_model_type=model_name,
-                    )
-                    if df_fc_day is None or df_fc_day.empty:
-                        continue
-                    v = df_fc_day["PredictedVehicles"].sum()
-                    records.append({"Date": d, "DailyPred": float(v)})
-                if not records:
-                    return None
-                df_model = (
-                    pd.DataFrame(records)
-                    .groupby("Date", as_index=False)["DailyPred"]
-                    .mean()
-                    .rename(columns={"DailyPred": f"Daily_{model_name}"})
-                )
-                return df_model.set_index("Date")
+        metrics_rows.append(
+            {
+                "Model": m_name,
+                "MSE": mse,
+                "RMSE": rmse,
+                "MAE": mae,
+                "MAPE (%)": mape,
+                "SMAPE (%)": smape,
+                "R²": r2,
+            }
+        )
 
-            # GRU
-            daily_pred_cols = []
-            for m_name in ["GRU", "RNN", "LSTM"]:
-                df_m = _compute_daily_for_model(m_name)
-                if df_m is not None:
-                    df_eval = df_eval.join(df_m, how="left")
-                    daily_pred_cols.append(m_name)
+    if metrics_rows:
+        st.subheader("📌 Metrics tổng 3 tháng (Daily)")
+        df_metrics = pd.DataFrame(metrics_rows)
+        for c in ["MSE", "RMSE", "MAE"]:
+            df_metrics[c] = df_metrics[c].round(2)
+        for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
+            df_metrics[c] = df_metrics[c].round(3)
+        st.dataframe(df_metrics, use_container_width=True)
 
-            df_eval = df_eval.reset_index()
+    # ==== Chart multi-line (Actual + Models) ====
+    frames = [
+        df_eval[["Date", "DailyActual"]]
+        .rename(columns={"DailyActual": "DailyValue"})
+        .assign(Source="Actual")
+    ]
 
-            # ==== Metrics tổng 3 tháng cho từng model ====
-            metrics_rows = []
-            for m_name in ["GRU", "RNN", "LSTM"]:
-                col_name = f"Daily_{m_name}"
-                if col_name not in df_eval.columns:
-                    continue
-                valid = df_eval[["DailyActual", col_name]].dropna()
-                if valid.empty:
-                    continue
-                actual = valid["DailyActual"].values.astype(float)
-                pred = valid[col_name].values.astype(float)
-
-                mse = mean_squared_error(actual, pred)
-                rmse = np.sqrt(mse)
-                mae = mean_absolute_error(actual, pred)
-
-                if np.any(actual != 0):
-                    mape = (
-                        np.mean(
-                            np.abs((actual - pred)[actual != 0] / actual[actual != 0])
-                        )
-                        * 100.0
-                    )
-                else:
-                    mape = np.nan
-
-                denom = np.abs(actual) + np.abs(pred)
-                smape = (
-                    np.mean(
-                        2.0 * np.abs(pred - actual) / np.where(denom == 0, 1.0, denom)
-                    )
-                    * 100.0
-                )
-
-                r2 = r2_score(actual, pred)
-
-                metrics_rows.append(
-                    {
-                        "Model": m_name,
-                        "MSE": mse,
-                        "RMSE": rmse,
-                        "MAE": mae,
-                        "MAPE (%)": mape,
-                        "SMAPE (%)": smape,
-                        "R²": r2,
-                    }
-                )
-
-            if metrics_rows:
-                st.subheader("📌 Metrics tổng 3 tháng (Daily)")
-                df_metrics = pd.DataFrame(metrics_rows)
-                # Làm đẹp số
-                for c in ["MSE", "RMSE", "MAE"]:
-                    df_metrics[c] = df_metrics[c].round(2)
-                for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
-                    df_metrics[c] = df_metrics[c].round(3)
-                st.dataframe(df_metrics, use_container_width=True)
-
-            # ==== Chart multi-line (Actual + Models) ====
-            frames = [
-                df_eval[["Date", "DailyActual"]]
-                .rename(columns={"DailyActual": "DailyValue"})
-                .assign(Source="Actual")
-            ]
-
-            for m_name in ["GRU", "RNN", "LSTM"]:
-                col_name = f"Daily_{m_name}"
-                if col_name in df_eval.columns and df_eval[col_name].notna().any():
-                    frames.append(
-                        df_eval[["Date", col_name]]
-                        .rename(columns={col_name: "DailyValue"})
-                        .assign(Source=m_name)
-                    )
-
-            df_chart = pd.concat(frames, ignore_index=True)
-            df_chart = df_chart.sort_values("Date")
-
-            chart_daily = (
-                alt.Chart(df_chart)
-                .mark_line(point=True)
-                .encode(
-                    x=alt.X("Date:T", title="Date"),
-                    y=alt.Y("DailyValue:Q", title="Vehicles / day"),
-                    color=alt.Color("Source:N", title="Series"),
-                    tooltip=[
-                        alt.Tooltip("Date:T", title="Date"),
-                        alt.Tooltip("Source:N", title="Series"),
-                        alt.Tooltip("DailyValue:Q", title="Vehicles/day", format=","),
-                    ],
-                )
-                .properties(height=300)
+    for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
+        col_name = f"Daily_{m_name}"
+        if col_name in df_eval.columns and df_eval[col_name].notna().any():
+            frames.append(
+                df_eval[["Date", col_name]]
+                .rename(columns={col_name: "DailyValue"})
+                .assign(Source=m_name)
             )
-            st.altair_chart(chart_daily, use_container_width=True)
 
-            with st.expander("🔍 Xem bảng daily (Actual + Models) – 3 tháng gần nhất"):
-                df_show = df_eval.copy()
-                # cast về int cho dễ nhìn
-                for c in df_show.columns:
-                    if c.startswith("Daily"):
-                        df_show[c] = df_show[c].round().astype("Int64")
-                st.dataframe(df_show.sort_values("Date"), use_container_width=True)
+    if frames:
+        df_chart = pd.concat(frames, ignore_index=True)
+        df_chart = df_chart.sort_values("Date")
+
+        chart_daily = (
+            alt.Chart(df_chart)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("Date:T", title="Date"),
+                y=alt.Y("DailyValue:Q", title="Vehicles / day"),
+                color=alt.Color("Source:N", title="Series"),
+                tooltip=[
+                    alt.Tooltip("Date:T", title="Date"),
+                    alt.Tooltip("Source:N", title="Series"),
+                    alt.Tooltip("DailyValue:Q", title="Vehicles/day", format=","),
+                ],
+            )
+            .properties(height=300)
+        )
+        st.altair_chart(chart_daily, use_container_width=True)
+
+        with st.expander(
+            "🔍 Xem bảng daily (Actual + Models) – 3 tháng gần nhất"
+        ):
+            df_show = df_eval.copy()
+            for c in df_show.columns:
+                if c.startswith("Daily"):
+                    df_show[c] = df_show[c].round().astype("Int64")
+            st.dataframe(df_show.sort_values("Date"), use_container_width=True)
+    else:
+        st.info("Không có series nào (GRU/RNN/LSTM/ARIMA/SARIMA) để hiển thị.")
+
+
 
 
 if __name__ == "__main__":
