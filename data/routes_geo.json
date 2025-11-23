@@ -10,7 +10,7 @@
   {
     "city": "Seattle",
     "zone": "FremontBridge",
-    "route_id": "Fremont Bridge Total",
+    "route_id": "Fremont-Total",
     "name": "Fremont Bridge Total",
     "lat": 47.6476,
     "lon": -122.3498
@@ -18,17 +18,17 @@
   {
     "city": "Seattle",
     "zone": "FremontBridge",
-    "route_id": "Fremont Bridge East Sidewalk",
+    "route_id": "Fremont-East",
     "name": "Fremont Bridge East Sidewalk",
     "lat": 47.6476,
-    "lon": -122.3498
+    "lon": -122.3488
   },
   {
     "city": "Seattle",
     "zone": "FremontBridge",
-    "route_id": "Fremont Bridge West Sidewalk",
+    "route_id": "Fremont-West",
     "name": "Fremont Bridge West Sidewalk",
     "lat": 47.6476,
-    "lon": -122.3498
+    "lon": -122.35
   }
 ]

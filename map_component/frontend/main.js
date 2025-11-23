@@ -176,22 +176,22 @@ function updateMarkers(routesData, selectedRouteId, allRoutes) {
   });
 
   // Điều khiển view
-  if (firstRender) {
-    // Lần đầu: luôn overview tất cả route
+  if (selectedRouteId && markersById[selectedRouteId]) {
+    // Có route đang chọn → zoom vào luôn
+    const latlng = markersById[selectedRouteId].getLatLng();
+    map.setView(latlng, 15);
+    firstRender = false;
+  } else if (firstRender) {
+    // Lần đầu chưa có route → overview tất cả
     if (globalBounds) {
       map.fitBounds(globalBounds, { padding: [80, 80] });
     }
     firstRender = false;
-  } else {
-    if (selectedRouteId && markersById[selectedRouteId]) {
-      // Có route đang chọn → zoom vào
-      const latlng = markersById[selectedRouteId].getLatLng();
-      map.setView(latlng, 15);
-    } else if (globalBounds) {
-      // Fallback: overview tất cả
-      map.fitBounds(globalBounds, { padding: [80, 80] });
-    }
+  } else if (globalBounds) {
+    // Fallback: overview
+    map.fitBounds(globalBounds, { padding: [80, 80] });
   }
+
 
   addResetButton();
 }
