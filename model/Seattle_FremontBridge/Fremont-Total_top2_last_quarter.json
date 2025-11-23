@@ -1,0 +1,33 @@
+{
+  "city": "Seattle",
+  "zone": "FremontBridge",
+  "route_id": "Fremont Bridge Total",
+  "family_name": "Seattle_FremontBridge",
+  "eval_start_date": "2017-10-01",
+  "eval_end_date": "2018-09-29",
+  "n_days_evaluated": 364,
+  "top_models": [
+    "LSTM",
+    "GRU"
+  ],
+  "metrics_avg": {
+    "LSTM": {
+      "mse": 140000.0,
+      "rmse": 374.0,
+      "mae": 240.0,
+      "mape": 11.5,
+      "smape": 10.1,
+      "r2": 0.93,
+      "score": 10.1
+    },
+    "GRU": {
+      "mse": 210000.0,
+      "rmse": 458.0,
+      "mae": 278.0,
+      "mape": 14.8,
+      "smape": 12.7,
+      "r2": 0.89,
+      "score": 12.7
+    }
+  }
+}

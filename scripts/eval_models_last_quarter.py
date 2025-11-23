@@ -2,21 +2,21 @@
 """
 Đánh giá GRU / RNN / ARIMA trên 1 năm gần nhất cho 1 route,
 lưu lại:
-  - <route_id>_metrics_last_year.parquet  (metrics theo ngày)
-  - <route_id>_top2_last_year.json       (summary + top-2 model)
+  - <route_id>_metrics_last_quarter.parquet  (metrics theo ngày)
+  - <route_id>_top2_last_quarter.json       (summary + top-2 model)
 
 Cách chạy (ví dụ):
 
   conda activate TrafficTrain
 
   # I-94
-  python scripts/eval_models_last_year.py \
+  python scripts/eval_models_last_quarter.py \
       --city Minneapolis \
       --zone I94 \
       --route "I-94-WB"
 
   # Fremont Total
-  python scripts/eval_models_last_year.py \
+  python scripts/eval_models_last_quarter.py \
       --city Seattle \
       --zone FremontBridge \
       --route "Fremont Bridge Total"
@@ -452,7 +452,7 @@ def main():
     model_dir = Path("model") / family_name
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    metrics_daily_path = model_dir / f"{route_id}_metrics_last_year.parquet"
+    metrics_daily_path = model_dir / f"{route_id}_metrics_last_quarter.parquet"
     df_eval.to_parquet(metrics_daily_path, index=False)
     print(f"Saved daily metrics to: {metrics_daily_path}")
 
@@ -515,7 +515,7 @@ def main():
         "metrics_avg": metrics_avg,
     }
 
-    summary_path = model_dir / f"{route_id}_top2_last_year.json"
+    summary_path = model_dir / f"{route_id}_top2_last_quarter.json"
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
 
