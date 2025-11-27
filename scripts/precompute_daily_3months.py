@@ -423,7 +423,7 @@ def main():
     parser.add_argument(
         "--days-back",
         type=int,
-        default=90,
+        default=30,
         help="Số ngày gần nhất để tính (mặc định: 90).",
     )
     parser.add_argument(

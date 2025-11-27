@@ -35,6 +35,7 @@ let markersGroup = null;
 let markersById = {};
 let globalBounds = null;
 let resetAdded = false;
+let legendAdded = false;
 let firstRender = true;
 
 function ensureMap() {
@@ -120,6 +121,33 @@ function addResetButton() {
   resetAdded = true;
 }
 
+function addLegend() {
+  if (legendAdded || !map) return;
+
+  const legend = L.control({ position: "bottomleft" });
+
+  legend.onAdd = function () {
+    const div = L.DomUtil.create("div", "traffic-legend");
+    div.innerHTML = `
+      <div style="background: rgba(255,255,255,0.9); padding:6px 10px; border-radius:8px; font-size:12px; box-shadow: 0 1px 3px rgba(0,0,0,0.25);">
+        <div style="margin-bottom:2px;">
+          <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#ff3333;margin-right:4px;border:1px solid #fff;"></span>
+          Tuyến đang chọn
+        </div>
+        <div>
+          <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#3388ff;margin-right:4px;border:1px solid #fff;"></span>
+          Tuyến khác
+        </div>
+      </div>
+    `;
+    return div;
+  };
+
+  legend.addTo(map);
+  legendAdded = true;
+}
+
+
 function updateMarkers(routesData, selectedRouteId, allRoutes) {
   ensureMap();
 
@@ -194,6 +222,29 @@ function updateMarkers(routesData, selectedRouteId, allRoutes) {
 
 
   addResetButton();
+  addLegend();
+}
+
+function createMarker(lat, lon, isSelected, routeId, name) {
+  const radius = isSelected ? 10 : 7;
+
+  const color = isSelected ? "#ff4b4b" : "#2c7be5";
+  const fillColor = isSelected ? "#ff4b4b" : "#2c7be5";
+
+  const marker = L.circleMarker([lat, lon], {
+    radius,
+    color: "#ffffff",       // viền trắng
+    weight: isSelected ? 3 : 1,
+    fillColor,
+    fillOpacity: isSelected ? 0.95 : 0.8,
+  });
+
+  marker.bindTooltip(name, {direction: "top", offset: [0, -8]});
+  marker.on("click", () => {
+    Streamlit.setComponentValue(routeId);
+  });
+
+  return marker;
 }
 
 // ====================== STREAMLIT HOOKS ======================

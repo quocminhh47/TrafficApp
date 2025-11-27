@@ -531,11 +531,6 @@ def main():
 
         if not top_models:
             top_models = ["GRU"]
-
-        st.markdown(
-            f"**Top models (last year, ensemble dùng cho Forecast):** "
-            f"`{', '.join(top_models)}`"
-        )
     else:
         # Chưa chọn city/route → chưa show gì, chỉ map + message "chọn route"
         pass
@@ -549,34 +544,8 @@ def main():
 
     df_geo_city = routes_geo_all[routes_geo_all["city"] == city].copy()
     routes_data = df_geo_city.to_dict("records")
-
-    # 🔍 DEBUG: so sánh RouteId parquet vs routes.json
-    routes_parquet = set(raw_routes)
-    routes_geo = set(df_geo_city["route_id"].astype(str).tolist())
-
-    # only_in_parquet = sorted(routes_parquet - routes_geo)
-    # only_in_geo = sorted(routes_geo - routes_parquet)
-
-    # with st.expander("🧪 Debug RouteId (parquet vs routes.json)"):
-    #     st.write("**RouteId trong parquet (sidebar):**", sorted(routes_parquet))
-    #     st.write("**route_id trong routes.json (map):**", sorted(routes_geo))
-    #     if only_in_parquet:
-    #         st.warning(
-    #             f"⚠️ Chỉ có trong parquet, KHÔNG có trong routes.json: {only_in_parquet}"
-    #         )
-    #     if only_in_geo:
-    #         st.warning(
-    #             f"⚠️ Chỉ có trong routes.json, KHÔNG có trong parquet: {only_in_geo}"
-    #         )
-    #     if not only_in_parquet and not only_in_geo:
-    #         st.success("✅ RouteId giữa parquet và routes.json khớp nhau.")
-
     df_all_geo = routes_geo_all.dropna(subset=["lat", "lon"]).copy()
     all_routes_list = df_all_geo.to_dict("records")
-
-    # if df_geo_city.empty:
-    #     st.info("Không có thông tin geo cho city hiện tại.")
-    #     routes_data = []
 
     clicked_route_id = map_routes(
         routes_data=routes_data,
@@ -635,22 +604,10 @@ def main():
     min_dt = df_full["DateTime"].min()
     max_dt = df_full["DateTime"].max()
 
-    st.sidebar.markdown(
-        f"**Data range (parquet):** {min_dt.date()} → {max_dt.date()}  \n"
-        f"**Lookback:** {LOOKBACK}h  \n"
-        f"**Horizon:** {HORIZON}h  \n"
-        f"**Model routes:** {len(ROUTES_MODEL)}"
-    )
-
     # ====================================
     # 7) FORECAST – tuần kế tiếp sau dữ liệu gốc (ensemble GRU/RNN)
     # ====================================
-    st.header(" Forecast – tuần kế tiếp sau dữ liệu gốc (NO SHIFT)")
-
-    st.caption(
-        "Forecast dùng ensemble các model top-2 (nếu có), ví dụ GRU + RNN. "
-        "Đường vẽ là giá trị trung bình, tooltip hiển thị từng model."
-    )
+    st.header(" Dự đoán lưu lượng giao thông cho 7 ngày tới")
 
     dfs_for_ensemble = []
 
@@ -796,13 +753,6 @@ def main():
                     low_val = float(s.min())
 
                     avg_val = float(s.mean())
-
-                    # peak_threshold = float(s.quantile(0.9))
-                    # peak_hours_mask = s >= peak_threshold
-                    # peak_hours_list = [
-                    #     idx.strftime("%H:%M") for idx, v in s[peak_hours_mask].items()
-                    # ]
-
                     st.markdown("### 📈 Phân tích nhanh trong ngày")
 
                     col1, col2, col3 = st.columns(3)
@@ -821,27 +771,47 @@ def main():
                     with col3:
                         st.metric(
                             "Lưu lượng trung bình",
-                            f"{avg_val:,.0f} vehicles/h",
+                            f"{avg_val:,.0f} xe/giờ",
                         )
-                    #
-                    # if peak_hours_list:
-                    #     st.markdown(
-                    #         "**Các khung giờ cao điểm (≥ 90th percentile):** "
-                    #         + ", ".join(peak_hours_list)
-                    #     )
-
                     # Bảng ngang
-                    st.markdown("### 🧮 Lưu lượng theo giờ")
+                    st.markdown("### 🧮 Lưu lượng xe cộ theo giờ")
 
+                    # s: Series index = DateTime, value = Vehicles/h (ensemble)
                     s_label = s.copy()
                     s_label.index = s_label.index.strftime("%H:%M")
-                    tbl = pd.DataFrame([s_label.values], columns=s_label.index)
-                    tbl.index = ["Vehicles/h"]
-                    st.dataframe(tbl, use_container_width=True)
+                    s_label_int = s_label.round(0).astype("Int64")  # convert to int, nullable
 
-                    st.markdown(
-                        f"**Ensemble models:** {', '.join(top_models)}"
+                    # 1 dòng, các cột là giờ
+                    tbl = s_label_int.to_frame().T
+                    tbl.index = ["Vehicles/h"]
+
+                    styled_tbl = (
+                        tbl.style
+                        .format("{:,.0f}", na_rep="-")  # hiển thị int, có phân cách
+                        .background_gradient(axis=1, cmap="YlOrRd")  # thấp = vàng nhạt, cao = đỏ
+                        .highlight_max(axis=1, color="#7f0000   ")  # giờ cao điểm nhất tô đỏ hẳn
                     )
+
+                    st.dataframe(styled_tbl, use_container_width=True, height=70)
+                    # st.dataframe(styled_tbl, use_container_width=True, height=140)
+
+                    # Chú giải màu
+                    st.markdown(
+                        """
+                        <div style="font-size:0.9rem; margin-top:4px;">
+                          <b>Chú thích màu:</b>
+                          <span style="display:inline-block;width:14px;height:14px;background-color:#008000;border-radius:3px;margin:0 4px 0 8px;border:1px solid #ccc;"></span>
+                          Xanh lá  = lưu lượng thấp / thưa thớt
+                          <span style="display:inline-block;width:14px;height:14px;background-color:#FFD700;border-radius:3px;margin:0 4px 0 12px;border:1px solid #ccc;"></span>
+                          Vàng = trung bình
+                          <span style="display:inline-block;width:14px;height:14px;background-color:#CC0000;border-radius:3px;margin:0 4px 0 12px;border:1px solid #ccc;"></span>
+                          Đỏ = giờ rất đông (cao điểm)
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    st.markdown(f"**Ensemble models:** {', '.join(top_models)}")
 
                     # Tooltip hiển thị từng model nếu có
                     tooltip_fields = [
@@ -873,21 +843,38 @@ def main():
                         )
                     )
 
+                    df_day = df_day.copy()
+
+                    q_low = df_day["PredictedVehicles"].quantile(0.2)
+                    q_high = df_day["PredictedVehicles"].quantile(0.8)
+
+                    def level_label(v):
+                        if v >= q_high:
+                            return "Rất đông"
+                        elif v <= q_low:
+                            return "Thưa thớt"
+                        else:
+                            return "Trung bình"
+
+                    df_day["TrafficLevel"] = df_day["PredictedVehicles"].apply(level_label)
+
                     base = alt.Chart(df_day).encode(
                         x=alt.X("DateTime:T", title="Thời gian")
                     )
 
-                    line = base.mark_line().encode(
+                    line = base.mark_line(color="lightgray").encode(
                         y=alt.Y("PredictedVehicles:Q", title="Vehicles"),
-                        tooltip=tooltip_fields,
                     )
-
+                    color_scale = alt.Scale(
+                        domain=["Thưa thớt", "Trung bình", "Rất đông"],
+                        range=["#008000", "#0000ff", "#CC0000"],
+                    )
                     points = base.mark_point(size=70).encode(
                         y="PredictedVehicles:Q",
-                        color=alt.condition(
-                            alt.datum.IsPeak,
-                            alt.value("red"),
-                            alt.value("steelblue"),
+                        color=alt.Color(
+                            "TrafficLevel:N",
+                            scale=color_scale,
+                            legend=alt.Legend(title="Mức lưu lượng"),
                         ),
                         tooltip=tooltip_fields,
                     )
@@ -897,15 +884,6 @@ def main():
                         title=f"Dự báo cho {vn_weekday_label(day_start)}",
                     )
                     st.altair_chart(chart, use_container_width=True)
-
-                    st.write(
-                        "Min / Max / Mean (Ensemble):",
-                        float(df_day["PredictedVehicles"].min()),
-                        "/",
-                        float(df_day["PredictedVehicles"].max()),
-                        "/",
-                        float(df_day["PredictedVehicles"].mean()),
-                    )
         else:
             st.info("Không có ngày nào trong forecast.")
 
@@ -913,7 +891,7 @@ def main():
     # 8) DAILY TRAFFIC – 3 THÁNG GẦN NHẤT
     #     Actual vs GRU / RNN / LSTM / ARIMA / SARIMA + Metrics tổng 3 tháng
     # ====================================
-    st.header("📊 Daily traffic – 3 tháng gần nhất (Actual vs Models)")
+    st.header("📊 Daily traffic – 3 tháng gần nhất (Actual vs Predicted by models)")
 
     # Đọc cache do script precompute_daily_3months.py sinh ra:
     #   model/<family_name>/<route_id>_daily_3months.parquet
@@ -1096,7 +1074,7 @@ def main():
         )
 
     if metrics_rows:
-        st.subheader("📌 Metrics tổng 3 tháng (Daily)")
+        st.subheader(" Đánh gía sai số theo từng model trong 3 tháng gần nhất")
         df_metrics = pd.DataFrame(metrics_rows)
         for c in ["MSE", "RMSE", "MAE"]:
             df_metrics[c] = df_metrics[c].round(2)

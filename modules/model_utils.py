@@ -164,6 +164,9 @@ def forecast_gru(
     try:
         y_scaled = model.predict(X, verbose=0).reshape(-1, 1)  # (HORIZON, 1)
         y = scaler.inverse_transform(y_scaled).reshape(-1)     # (HORIZON,)
+        # đảm bảo không âm vì là lưu lượng xe
+        y = np.maximum(y, 0.0)
+
     except Exception as e:
         print(f"[GRU] ❌ predict error for {route_id}: {e} → fallback Baseline.")
         return _baseline_forecast(route_id, base_date, HORIZON, hist_df=g_hist)
@@ -272,6 +275,9 @@ def forecast_rnn(
     try:
         y_scaled = model.predict(X, verbose=0).reshape(-1, 1)
         y = scaler.inverse_transform(y_scaled).reshape(-1)
+        # đảm bảo không âm vì là lưu lượng xe
+        y = np.maximum(y, 0.0)
+
     except Exception as e:
         print(f"[RNN] ❌ predict error for {route_id}: {e} → fallback Baseline.")
         return _baseline_forecast(route_id, base_date, HORIZON, hist_df=g_hist)
@@ -508,6 +514,9 @@ def forecast_lstm(
     try:
         y_scaled = model.predict(X, verbose=0).reshape(-1, 1)  # (HORIZON, 1)
         y = scaler.inverse_transform(y_scaled).reshape(-1)     # (HORIZON,)
+        # đảm bảo không âm vì là lưu lượng xe
+        y = np.maximum(y, 0.0)
+
     except Exception as e:
         print(f"[LSTM] ❌ predict error for {route_id}: {e} → fallback Baseline.")
         return _baseline_forecast(route_id, base_date, HORIZON, hist_df=g_hist)
