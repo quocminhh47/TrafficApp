@@ -64,7 +64,7 @@ def forecast_arima_for_day(
     s = (
         df.set_index("DateTime")[value_col]
         .sort_index()
-        .resample("1H")
+        .resample("1h")
         .mean()
         .interpolate(limit_direction="both")
     )
@@ -88,7 +88,7 @@ def forecast_arima_for_day(
     except Exception as ex:
         return None, f"ARIMA fit/predict error: {ex}"
 
-    idx_fc = pd.date_range(start=day_start, periods=horizon, freq="1H")
+    idx_fc = pd.date_range(start=day_start, periods=horizon, freq="1h")
     df_fc = pd.DataFrame(
         {
             "DateTime": idx_fc,

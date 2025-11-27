@@ -5,11 +5,7 @@ import warnings
 
 import numpy as np
 import pandas as pd
-
-try:
-    import pmdarima as pm  # pip install pmdarima
-except ImportError:
-    pm = None
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 
 def forecast_sarima_for_day(
@@ -21,16 +17,13 @@ def forecast_sarima_for_day(
     m: int = 24,
 ) -> Tuple[Optional[pd.DataFrame], str]:
     """
-    Fit SARIMA (auto_arima) trên toàn bộ history < day_start
+    Fit SARIMA (SARIMAX với bộ tham số cố định) trên toàn bộ history < day_start
     và dự báo hourly cho [day_start, day_end).
 
     Trả về:
       - df_fc: DataFrame ["DateTime", "Pred_SARIMA"] hoặc None
       - info: string mô tả model / lý do lỗi
     """
-    if pm is None:
-        return None, "pmdarima chưa được cài – không thể chạy SARIMA"
-
     if df_full is None or df_full.empty:
         return None, "df_full empty"
 
@@ -43,11 +36,11 @@ def forecast_sarima_for_day(
     if df.empty:
         return None, "Parse DateTime thất bại"
 
-    # Resample 1H
+    # Resample 1h (fix FutureWarning: dùng '1h' thay vì '1H')
     s = (
         df.set_index("DateTime")[value_col]
         .sort_index()
-        .resample("1H")
+        .resample("1h")
         .mean()
         .interpolate(limit_direction="both")
     )
@@ -61,26 +54,36 @@ def forecast_sarima_for_day(
     if horizon <= 0:
         return None, "Horizon <= 0"
 
+    # Dùng SARIMAX với bộ tham số cố định (nhẹ hơn auto_arima rất nhiều)
+    # Bạn có thể chỉnh order/seasonal_order nếu muốn.
+    order = (1, 0, 1)
+    if seasonal:
+        seasonal_order = (1, 1, 1, m)  # m = 24 (daily seasonality) hoặc 168 nếu weekly
+    else:
+        seasonal_order = (0, 0, 0, 0)
+
     try:
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
-            model = pm.auto_arima(
+            model = SARIMAX(
                 train,
-                seasonal=seasonal,
-                m=m,  # seasonal period, 24h
-                stepwise=True,
-                suppress_warnings=True,
-                error_action="ignore",
+                order=order,
+                seasonal_order=seasonal_order,
+                enforce_stationarity=False,
+                enforce_invertibility=False,
             )
-            y_fc = model.predict(n_periods=horizon)
+            res = model.fit(disp=False)
+            y_fc = res.forecast(steps=horizon)
     except Exception as ex:
         return None, f"SARIMA fit/predict error: {ex}"
 
-    idx_fc = pd.date_range(start=day_start, periods=horizon, freq="1H")
+    # Tạo index forecast với freq '1h' (chữ thường)
+    idx_fc = pd.date_range(start=day_start, periods=horizon, freq="1h")
     df_fc = pd.DataFrame(
         {
             "DateTime": idx_fc,
             "Pred_SARIMA": np.asarray(y_fc, dtype=float),
         }
     )
-    return df_fc, "SARIMA(auto)"
+    info = f"SARIMA(order={order}, seasonal_order={seasonal_order})"
+    return df_fc, info
