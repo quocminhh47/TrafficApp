@@ -357,6 +357,8 @@ def main():
 
     # ----- CITY -----
     cities = list_cities()
+    if "HoChiMinh" not in cities: #TODO :  enhance this later
+        cities.append("HoChiMinh")
     if not cities:
         st.error("Không tìm thấy city nào trong data/processed_ds.")
         return
@@ -573,7 +575,7 @@ def main():
 
             st.rerun()
     if route_id:
-        st.write(f"**Đang chọn tuyến:** {route_id}")
+        st.info(f"**Đang hiển thị dữ liệu cho tuyến :** {route_id}")
     else:
         st.write("**Chưa chọn tuyến nào**")
 
@@ -811,7 +813,7 @@ def main():
                         unsafe_allow_html=True,
                     )
 
-                    st.markdown(f"**Ensemble models:** {', '.join(top_models)}")
+                    st.markdown(f"**Mô hình sử dụng:** {', '.join(top_models)}")
 
                     # Tooltip hiển thị từng model nếu có
                     tooltip_fields = [

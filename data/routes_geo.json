@@ -30,5 +30,69 @@
     "name": "Fremont Bridge West Sidewalk",
     "lat": 47.64927823150597,
     "lon": -122.3497507762111
+  },
+  {
+    "city": "HoChiMinh",
+    "zone": "HCMC",
+    "route_id": "ly_thuong_kiet",
+    "name": "Lý Thường Kiệt (HCMC)",
+    "lat": 10.78534224782787,
+    "lon": 106.65106135241804
+  },
+  {
+    "city": "HoChiMinh",
+    "zone": "HCMC",
+    "route_id": "nguyen_kiem",
+    "name": "Nguyễn Kiệm (HCMC)",
+    "lat": 10.809760434424778,
+    "lon": 106.67884558415929
+  },
+  {
+    "city": "HoChiMinh",
+    "zone": "HCMC",
+    "route_id": "quang_trung",
+    "name": "Quang Trung (HCMC)",
+    "lat": 10.840136577605119,
+    "lon": 106.65209646590493
+  },
+  {
+    "city": "HoChiMinh",
+    "zone": "HCMC",
+    "route_id": "nguyen_dinh_chieu",
+    "name": "Nguyễn Ðình Chiểu (HCMC)",
+    "lat": 10.779813410913704,
+    "lon": 106.69137066700506
+  },
+  {
+    "city": "HoChiMinh",
+    "zone": "HCMC",
+    "route_id": "le_duc_tho",
+    "name": "Lê Đức Thọ (HCMC)",
+    "lat": 10.849594853455724,
+    "lon": 106.66487665212384
+  },
+  {
+    "city": "HoChiMinh",
+    "zone": "HCMC",
+    "route_id": "quoc_lo_1a",
+    "name": "Quốc lộ 1A (HCMC)",
+    "lat": 10.848366322388062,
+    "lon": 106.64254948283583
+  },
+  {
+    "city": "HoChiMinh",
+    "zone": "HCMC",
+    "route_id": "to_hien_thanh",
+    "name": "Tô Hiến Thành (HCMC)",
+    "lat": 10.77617744709596,
+    "lon": 106.66405850959598
+  },
+  {
+    "city": "HoChiMinh",
+    "zone": "HCMC",
+    "route_id": "truong_chinh",
+    "name": "Trường Chinh (HCMC)",
+    "lat": 10.819743069630011,
+    "lon": 106.6301499815519
   }
 ]

@@ -1,0 +1,10 @@
+street_name,slug,timesteps,n_train_seq,n_test_seq,acc,f1,status,model_path
+Lý Thường Kiệt,ly_thuong_kiet,164,118,30,0.6333333333333333,0.7659574468085106,trained,model_hcmc/gru_congestion_ly_thuong_kiet.keras
+Đường Lý Thường Kiệt,uong_ly_thuong_kiet,137,96,25,0.92,0.9583333333333334,trained,model_hcmc/gru_congestion_uong_ly_thuong_kiet.keras
+Nguyễn Kiệm,nguyen_kiem,91,60,15,0.13333333333333333,0.0,trained,model_hcmc/gru_congestion_nguyen_kiem.keras
+Quang Trung,quang_trung,88,57,15,0.8,0.0,trained,model_hcmc/gru_congestion_quang_trung.keras
+Nguyễn Ðình Chiểu,nguyen_inh_chieu,86,56,14,0.5,0.6666666666666666,trained,model_hcmc/gru_congestion_nguyen_inh_chieu.keras
+Lê Đức Thọ,le_uc_tho,84,54,14,0.7142857142857143,0.0,trained,model_hcmc/gru_congestion_le_uc_tho.keras
+Quốc lộ 1A,quoc_lo_1a,83,53,14,0.8571428571428571,0.8,trained,model_hcmc/gru_congestion_quoc_lo_1a.keras
+Tô Hiến Thành,to_hien_thanh,83,53,14,0.9285714285714286,0.9629629629629629,trained,model_hcmc/gru_congestion_to_hien_thanh.keras
+Trường Chinh,truong_chinh,81,52,13,0.38461538461538464,0.5555555555555556,trained,model_hcmc/gru_congestion_truong_chinh.keras
