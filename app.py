@@ -535,6 +535,9 @@ def main():
         # Chưa chọn city/route → chưa show gì, chỉ map + message "chọn route"
         pass
 
+    # ----- OPTIONS -----
+    tab = st.sidebar.radio("Options", ["FORECAST", "DAILY TRAFFIC"])
+
     # ====================================
     # 5) MAP COMPONENT
     # ====================================
@@ -607,530 +610,878 @@ def main():
     # ====================================
     # 7) FORECAST – tuần kế tiếp sau dữ liệu gốc (ensemble GRU/RNN)
     # ====================================
-    st.header(" Dự đoán lưu lượng giao thông cho 7 ngày tới")
+    if tab == "FORECAST":
+        st.header(" Dự đoán lưu lượng giao thông cho 7 ngày tới")
 
-    dfs_for_ensemble = []
+        dfs_for_ensemble = []
 
-    for m_name in top_models:
-        if m_name not in ("GRU", "RNN", "LSTM"):
-            # bỏ qua model lạ (ví dụ ARIMA) nếu lỡ ghi vào JSON
-            continue
+        for m_name in top_models:
+            if m_name not in ("GRU", "RNN", "LSTM"):
+                # bỏ qua model lạ (ví dụ ARIMA) nếu lỡ ghi vào JSON
+                continue
 
-        if m_name in ("GRU", "RNN"):
-            # logic cũ: dùng forecast_week_after_last_point với GRU/RNN
-            df_m, anchor_m = forecast_week_after_last_point(
-                route_id=route_id,
-                city=city,
-                zone=None if zone == "(All)" else zone,
-                ctx=ctx,
-                n_days=7,
-                model_type=m_name,
-            )
-        elif m_name == "LSTM":
-            # NEW: forecast tuần bằng LSTM riêng
-            df_m, anchor_m = forecast_week_after_last_point_lstm(
-                route_id=route_id,
-                city=city,
-                zone=None if zone == "(All)" else zone,
-                ctx=ctx,
-                n_days=7,
-            )
-        else:
-            df_m, anchor_m = None, None
-
-        if df_m is not None and not df_m.empty:
-            dfs_for_ensemble.append((m_name, df_m, anchor_m))
-
-
-    if not dfs_for_ensemble:
-        st.warning("Không forecast được bằng GRU/RNN top-2, fallback GRU.")
-        df_fc_raw, anchor_day_raw = forecast_week_after_last_point(
-            route_id=route_id,
-            city=city,
-            zone=None if zone == "(All)" else zone,
-            ctx=ctx,
-            n_days=7,
-            model_type="GRU",
-        )
-        if df_fc_raw is not None and not df_fc_raw.empty:
-            df_fc_raw = df_fc_raw.copy()
-            df_fc_raw["DateTime"] = pd.to_datetime(
-                df_fc_raw["DateTime"], errors="coerce"
-            )
-            df_fc_raw = df_fc_raw.dropna(subset=["DateTime"])
-            df_fc_raw = df_fc_raw.rename(
-                columns={"PredictedVehicles": "Pred_GRU"}
-            )
-            df_fc_raw["Pred_ENSEMBLE"] = df_fc_raw["Pred_GRU"]
-            df_fc_raw["PredictedVehicles"] = df_fc_raw["Pred_ENSEMBLE"]
-    else:
-        anchor_day_raw = dfs_for_ensemble[0][2]
-
-        df_merge = None
-        for m_name, df_m, _ in dfs_for_ensemble:
-            col = f"Pred_{m_name}"
-            tmp = (
-                df_m[["DateTime", "PredictedVehicles"]]
-                .rename(columns={"PredictedVehicles": col})
-            )
-            df_merge = tmp if df_merge is None else df_merge.merge(
-                tmp, on="DateTime", how="inner"
-            )
-
-        if df_merge is not None and not df_merge.empty:
-            model_pred_cols = [
-                f"Pred_{m}" for m in top_models if f"Pred_{m}" in df_merge.columns
-            ]
-            if model_pred_cols:
-                df_merge["Pred_ENSEMBLE"] = df_merge[model_pred_cols].mean(
-                    axis=1
+            if m_name in ("GRU", "RNN"):
+                # logic cũ: dùng forecast_week_after_last_point với GRU/RNN
+                df_m, anchor_m = forecast_week_after_last_point(
+                    route_id=route_id,
+                    city=city,
+                    zone=None if zone == "(All)" else zone,
+                    ctx=ctx,
+                    n_days=7,
+                    model_type=m_name,
+                )
+            elif m_name == "LSTM":
+                # NEW: forecast tuần bằng LSTM riêng
+                df_m, anchor_m = forecast_week_after_last_point_lstm(
+                    route_id=route_id,
+                    city=city,
+                    zone=None if zone == "(All)" else zone,
+                    ctx=ctx,
+                    n_days=7,
                 )
             else:
-                df_merge["Pred_ENSEMBLE"] = np.nan
+                df_m, anchor_m = None, None
 
-            df_merge["PredictedVehicles"] = df_merge["Pred_ENSEMBLE"]
-            df_fc_raw = df_merge.copy()
+            if df_m is not None and not df_m.empty:
+                dfs_for_ensemble.append((m_name, df_m, anchor_m))
+
+
+        if not dfs_for_ensemble:
+            st.warning("Không forecast được bằng GRU/RNN top-2, fallback GRU.")
+            df_fc_raw, anchor_day_raw = forecast_week_after_last_point(
+                route_id=route_id,
+                city=city,
+                zone=None if zone == "(All)" else zone,
+                ctx=ctx,
+                n_days=7,
+                model_type="GRU",
+            )
+            if df_fc_raw is not None and not df_fc_raw.empty:
+                df_fc_raw = df_fc_raw.copy()
+                df_fc_raw["DateTime"] = pd.to_datetime(
+                    df_fc_raw["DateTime"], errors="coerce"
+                )
+                df_fc_raw = df_fc_raw.dropna(subset=["DateTime"])
+                df_fc_raw = df_fc_raw.rename(
+                    columns={"PredictedVehicles": "Pred_GRU"}
+                )
+                df_fc_raw["Pred_ENSEMBLE"] = df_fc_raw["Pred_GRU"]
+                df_fc_raw["PredictedVehicles"] = df_fc_raw["Pred_ENSEMBLE"]
         else:
-            df_fc_raw = None
+            anchor_day_raw = dfs_for_ensemble[0][2]
 
-    if df_fc_raw is None or df_fc_raw.empty:
-        st.warning("Không forecast được (thiếu dữ liệu history).")
-    else:
-        df_fc = df_fc_raw.copy()
-        df_fc["DateTime"] = pd.to_datetime(df_fc["DateTime"], errors="coerce")
-        df_fc = df_fc.dropna(subset=["DateTime"])
+            df_merge = None
+            for m_name, df_m, _ in dfs_for_ensemble:
+                col = f"Pred_{m_name}"
+                tmp = (
+                    df_m[["DateTime", "PredictedVehicles"]]
+                    .rename(columns={"PredictedVehicles": col})
+                )
+                df_merge = tmp if df_merge is None else df_merge.merge(
+                    tmp, on="DateTime", how="inner"
+                )
 
-        days = (
-            df_fc["DateTime"]
-            .dt.normalize()
-            .drop_duplicates()
-            .sort_values()
-            .tolist()
-        )
-
-        if days:
-            day_tabs = st.tabs([vn_weekday_label(d) for d in days])
-
-            for d, t in zip(days, day_tabs):
-                with t:
-                    day_start = d
-                    day_end = d + pd.Timedelta(days=1)
-
-                    df_day = df_fc[
-                        (df_fc["DateTime"] >= day_start)
-                        & (df_fc["DateTime"] < day_end)
-                    ].copy()
-
-                    if df_day.empty:
-                        st.info("Không có forecast cho ngày này.")
-                        continue
-
-                    # Cột dùng để phân tích: ưu tiên ensemble
-                    metric_col = "PredictedVehicles_Ensemble"
-                    if metric_col not in df_day.columns:
-                        metric_col = "PredictedVehicles"
-
-                    df_day["DateTime"] = pd.to_datetime(
-                        df_day["DateTime"], errors="coerce"
+            if df_merge is not None and not df_merge.empty:
+                model_pred_cols = [
+                    f"Pred_{m}" for m in top_models if f"Pred_{m}" in df_merge.columns
+                ]
+                if model_pred_cols:
+                    df_merge["Pred_ENSEMBLE"] = df_merge[model_pred_cols].mean(
+                        axis=1
                     )
-                    df_day = df_day.dropna(subset=["DateTime"])
+                else:
+                    df_merge["Pred_ENSEMBLE"] = np.nan
 
-                    s = (
-                        df_day.set_index("DateTime")[metric_col]
-                        .astype(float)
-                        .sort_index()
-                    )
+                df_merge["PredictedVehicles"] = df_merge["Pred_ENSEMBLE"]
+                df_fc_raw = df_merge.copy()
+            else:
+                df_fc_raw = None
 
-                    if s.empty:
-                        st.info("Không có dữ liệu forecast hợp lệ cho ngày này.")
-                        continue
-
-                    # === Phân tích giờ cao điểm / vắng nhất / trung bình ===
-                    peak_time = s.idxmax()
-                    peak_val = float(s.max())
-
-                    low_time = s.idxmin()
-                    low_val = float(s.min())
-
-                    avg_val = float(s.mean())
-                    st.markdown("### 📈 Phân tích nhanh trong ngày")
-
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric(
-                            "Giờ cao điểm nhất",
-                            f"{peak_time:%H:%M}",
-                            help=f"Khoảng {peak_val:,.0f} vehicles/h",
-                        )
-                    with col2:
-                        st.metric(
-                            "Giờ vắng nhất",
-                            f"{low_time:%H:%M}",
-                            help=f"Khoảng {low_val:,.0f} vehicles/h",
-                        )
-                    with col3:
-                        st.metric(
-                            "Lưu lượng trung bình",
-                            f"{avg_val:,.0f} xe/giờ",
-                        )
-                    # Bảng ngang
-                    st.markdown("### 🧮 Lưu lượng xe cộ theo giờ")
-
-                    # s: Series index = DateTime, value = Vehicles/h (ensemble)
-                    s_label = s.copy()
-                    s_label.index = s_label.index.strftime("%H:%M")
-                    s_label_int = s_label.round(0).astype("Int64")  # convert to int, nullable
-
-                    # 1 dòng, các cột là giờ
-                    tbl = s_label_int.to_frame().T
-                    tbl.index = ["Vehicles/h"]
-
-                    styled_tbl = (
-                        tbl.style
-                        .format("{:,.0f}", na_rep="-")  # hiển thị int, có phân cách
-                        .background_gradient(axis=1, cmap="YlOrRd")  # thấp = vàng nhạt, cao = đỏ
-                        .highlight_max(axis=1, color="#7f0000   ")  # giờ cao điểm nhất tô đỏ hẳn
-                    )
-
-                    st.dataframe(styled_tbl, use_container_width=True, height=70)
-                    # st.dataframe(styled_tbl, use_container_width=True, height=140)
-
-                    # Chú giải màu
-                    st.markdown(
-                        """
-                        <div style="font-size:0.9rem; margin-top:4px;">
-                          <b>Chú thích màu:</b>
-                          <span style="display:inline-block;width:14px;height:14px;background-color:#008000;border-radius:3px;margin:0 4px 0 8px;border:1px solid #ccc;"></span>
-                          Xanh lá  = lưu lượng thấp / thưa thớt
-                          <span style="display:inline-block;width:14px;height:14px;background-color:#FFD700;border-radius:3px;margin:0 4px 0 12px;border:1px solid #ccc;"></span>
-                          Vàng = trung bình
-                          <span style="display:inline-block;width:14px;height:14px;background-color:#CC0000;border-radius:3px;margin:0 4px 0 12px;border:1px solid #ccc;"></span>
-                          Đỏ = giờ rất đông (cao điểm)
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-
-                    st.markdown(f"**Ensemble models:** {', '.join(top_models)}")
-
-                    # Tooltip hiển thị từng model nếu có
-                    tooltip_fields = [
-                        alt.Tooltip("DateTime:T", title="Thời gian"),
-                        alt.Tooltip(
-                            "Pred_ENSEMBLE:Q",
-                            title="Dự báo ensemble",
-                            format=".0f",
-                        ),
-                    ]
-                    if "Pred_GRU" in df_day.columns:
-                        tooltip_fields.append(
-                            alt.Tooltip("Pred_GRU:Q", title="GRU", format=".0f")
-                        )
-                    if "Pred_RNN" in df_day.columns:
-                        tooltip_fields.append(
-                            alt.Tooltip("Pred_RNN:Q", title="RNN", format=".0f")
-                        )
-                    if "Pred_LSTM" in df_day.columns:
-                        tooltip_fields.append(
-                            alt.Tooltip("Pred_LSTM:Q", title="LSTM", format=".0f")
-                        )
-
-                    tooltip_fields.append(
-                        alt.Tooltip(
-                            "PredictedVehicles:Q",
-                            title="Ensemble (avg)",
-                            format=".0f",
-                        )
-                    )
-
-                    df_day = df_day.copy()
-
-                    q_low = df_day["PredictedVehicles"].quantile(0.2)
-                    q_high = df_day["PredictedVehicles"].quantile(0.8)
-
-                    def level_label(v):
-                        if v >= q_high:
-                            return "Rất đông"
-                        elif v <= q_low:
-                            return "Thưa thớt"
-                        else:
-                            return "Trung bình"
-
-                    df_day["TrafficLevel"] = df_day["PredictedVehicles"].apply(level_label)
-
-                    base = alt.Chart(df_day).encode(
-                        x=alt.X("DateTime:T", title="Thời gian")
-                    )
-
-                    line = base.mark_line(color="lightgray").encode(
-                        y=alt.Y("PredictedVehicles:Q", title="Vehicles"),
-                    )
-                    color_scale = alt.Scale(
-                        domain=["Thưa thớt", "Trung bình", "Rất đông"],
-                        range=["#008000", "#0000ff", "#CC0000"],
-                    )
-                    points = base.mark_point(size=70).encode(
-                        y="PredictedVehicles:Q",
-                        color=alt.Color(
-                            "TrafficLevel:N",
-                            scale=color_scale,
-                            legend=alt.Legend(title="Mức lưu lượng"),
-                        ),
-                        tooltip=tooltip_fields,
-                    )
-
-                    chart = (line + points).interactive().properties(
-                        height=320,
-                        title=f"Dự báo cho {vn_weekday_label(day_start)}",
-                    )
-                    st.altair_chart(chart, use_container_width=True)
+        if df_fc_raw is None or df_fc_raw.empty:
+            st.warning("Không forecast được (thiếu dữ liệu history).")
         else:
-            st.info("Không có ngày nào trong forecast.")
+            df_fc = df_fc_raw.copy()
+            df_fc["DateTime"] = pd.to_datetime(df_fc["DateTime"], errors="coerce")
+            df_fc = df_fc.dropna(subset=["DateTime"])
+
+            days = (
+                df_fc["DateTime"]
+                .dt.normalize()
+                .drop_duplicates()
+                .sort_values()
+                .tolist()
+            )
+
+            if days:
+                day_tabs = st.tabs([vn_weekday_label(d) for d in days])
+
+                for d, t in zip(days, day_tabs):
+                    with t:
+                        day_start = d
+                        day_end = d + pd.Timedelta(days=1)
+
+                        df_day = df_fc[
+                            (df_fc["DateTime"] >= day_start)
+                            & (df_fc["DateTime"] < day_end)
+                        ].copy()
+
+                        if df_day.empty:
+                            st.info("Không có forecast cho ngày này.")
+                            continue
+
+                        # Cột dùng để phân tích: ưu tiên ensemble
+                        metric_col = "PredictedVehicles_Ensemble"
+                        if metric_col not in df_day.columns:
+                            metric_col = "PredictedVehicles"
+
+                        df_day["DateTime"] = pd.to_datetime(
+                            df_day["DateTime"], errors="coerce"
+                        )
+                        df_day = df_day.dropna(subset=["DateTime"])
+
+                        s = (
+                            df_day.set_index("DateTime")[metric_col]
+                            .astype(float)
+                            .sort_index()
+                        )
+
+                        if s.empty:
+                            st.info("Không có dữ liệu forecast hợp lệ cho ngày này.")
+                            continue
+
+                        # === Phân tích giờ cao điểm / vắng nhất / trung bình ===
+                        peak_time = s.idxmax()
+                        peak_val = float(s.max())
+
+                        low_time = s.idxmin()
+                        low_val = float(s.min())
+
+                        avg_val = float(s.mean())
+                        st.markdown("### 📈 Phân tích nhanh trong ngày")
+
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric(
+                                "Giờ cao điểm nhất",
+                                f"{peak_time:%H:%M}",
+                                help=f"Khoảng {peak_val:,.0f} vehicles/h",
+                            )
+                        with col2:
+                            st.metric(
+                                "Giờ vắng nhất",
+                                f"{low_time:%H:%M}",
+                                help=f"Khoảng {low_val:,.0f} vehicles/h",
+                            )
+                        with col3:
+                            st.metric(
+                                "Lưu lượng trung bình",
+                                f"{avg_val:,.0f} xe/giờ",
+                            )
+                        # Bảng ngang
+                        st.markdown("### 🧮 Lưu lượng xe cộ theo giờ")
+
+                        # s: Series index = DateTime, value = Vehicles/h (ensemble)
+                        s_label = s.copy()
+                        s_label.index = s_label.index.strftime("%H:%M")
+                        s_label_int = s_label.round(0).astype("Int64")  # convert to int, nullable
+
+                        # 1 dòng, các cột là giờ
+                        tbl = s_label_int.to_frame().T
+                        tbl.index = ["Vehicles/h"]
+
+                        styled_tbl = (
+                            tbl.style
+                            .format("{:,.0f}", na_rep="-")  # hiển thị int, có phân cách
+                            .background_gradient(axis=1, cmap="YlOrRd")  # thấp = vàng nhạt, cao = đỏ
+                            .highlight_max(axis=1, color="#7f0000   ")  # giờ cao điểm nhất tô đỏ hẳn
+                        )
+
+                        st.dataframe(styled_tbl, use_container_width=True, height=70)
+                        # st.dataframe(styled_tbl, use_container_width=True, height=140)
+
+                        # Chú giải màu
+                        st.markdown(
+                            """
+                            <div style="font-size:0.9rem; margin-top:4px;">
+                              <b>Chú thích màu:</b>
+                              <span style="display:inline-block;width:14px;height:14px;background-color:#008000;border-radius:3px;margin:0 4px 0 8px;border:1px solid #ccc;"></span>
+                              Xanh lá  = lưu lượng thấp / thưa thớt
+                              <span style="display:inline-block;width:14px;height:14px;background-color:#FFD700;border-radius:3px;margin:0 4px 0 12px;border:1px solid #ccc;"></span>
+                              Vàng = trung bình
+                              <span style="display:inline-block;width:14px;height:14px;background-color:#CC0000;border-radius:3px;margin:0 4px 0 12px;border:1px solid #ccc;"></span>
+                              Đỏ = giờ rất đông (cao điểm)
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+
+                        st.markdown(f"**Ensemble models:** {', '.join(top_models)}")
+
+                        # Tooltip hiển thị từng model nếu có
+                        tooltip_fields = [
+                            alt.Tooltip("DateTime:T", title="Thời gian"),
+                            alt.Tooltip(
+                                "Pred_ENSEMBLE:Q",
+                                title="Dự báo ensemble",
+                                format=".0f",
+                            ),
+                        ]
+                        if "Pred_GRU" in df_day.columns:
+                            tooltip_fields.append(
+                                alt.Tooltip("Pred_GRU:Q", title="GRU", format=".0f")
+                            )
+                        if "Pred_RNN" in df_day.columns:
+                            tooltip_fields.append(
+                                alt.Tooltip("Pred_RNN:Q", title="RNN", format=".0f")
+                            )
+                        if "Pred_LSTM" in df_day.columns:
+                            tooltip_fields.append(
+                                alt.Tooltip("Pred_LSTM:Q", title="LSTM", format=".0f")
+                            )
+
+                        tooltip_fields.append(
+                            alt.Tooltip(
+                                "PredictedVehicles:Q",
+                                title="Ensemble (avg)",
+                                format=".0f",
+                            )
+                        )
+
+                        df_day = df_day.copy()
+
+                        q_low = df_day["PredictedVehicles"].quantile(0.2)
+                        q_high = df_day["PredictedVehicles"].quantile(0.8)
+
+                        def level_label(v):
+                            if v >= q_high:
+                                return "Rất đông"
+                            elif v <= q_low:
+                                return "Thưa thớt"
+                            else:
+                                return "Trung bình"
+
+                        df_day["TrafficLevel"] = df_day["PredictedVehicles"].apply(level_label)
+
+                        base = alt.Chart(df_day).encode(
+                            x=alt.X("DateTime:T", title="Thời gian")
+                        )
+
+                        line = base.mark_line(color="lightgray").encode(
+                            y=alt.Y("PredictedVehicles:Q", title="Vehicles"),
+                        )
+                        color_scale = alt.Scale(
+                            domain=["Thưa thớt", "Trung bình", "Rất đông"],
+                            range=["#008000", "#0000ff", "#CC0000"],
+                        )
+                        points = base.mark_point(size=70).encode(
+                            y="PredictedVehicles:Q",
+                            color=alt.Color(
+                                "TrafficLevel:N",
+                                scale=color_scale,
+                                legend=alt.Legend(title="Mức lưu lượng"),
+                            ),
+                            tooltip=tooltip_fields,
+                        )
+
+                        chart = (line + points).interactive().properties(
+                            height=320,
+                            title=f"Dự báo cho {vn_weekday_label(day_start)}",
+                        )
+                        st.altair_chart(chart, use_container_width=True)
+            else:
+                st.info("Không có ngày nào trong forecast.")
 
     # ====================================
     # 8) DAILY TRAFFIC – 3 THÁNG GẦN NHẤT
     #     Actual vs GRU / RNN / LSTM / ARIMA / SARIMA + Metrics tổng 3 tháng
     # ====================================
-    st.header("📊 Daily traffic – 3 tháng gần nhất (Actual vs Predicted by models)")
+    elif tab == "DAILY TRAFFIC":
+        st.header("📊 Daily traffic – 3 tháng gần nhất (Actual vs Predicted by models)")
 
-    # Đọc cache do script precompute_daily_3months.py sinh ra:
-    #   model/<family_name>/<route_id>_daily_3months.parquet
-    cache_dir = Path("model") / ctx.family_name
-    cache_path = cache_dir / f"{route_id}_daily_3months.parquet"
+        # Đọc cache do script precompute_daily_3months.py sinh ra:
+        #   model/<family_name>/<route_id>_daily_3months.parquet
+        cache_dir = Path("model") / ctx.family_name
+        cache_path = cache_dir / f"{route_id}_daily_3months.parquet"
 
-    if not cache_path.exists():
-        st.info(
-            f"⚠️ Chưa tìm thấy file cache daily: {cache_path}. "
-            "Hãy chạy scripts/precompute_daily_3months.py trước, hoặc bật lại chế độ tính trực tiếp trong app."
-        )
-        return
-
-    try:
-        df_eval = pd.read_parquet(cache_path)
-    except Exception as ex:
-        st.error(f"Lỗi đọc file cache daily: {ex}")
-        return
-
-    if df_eval is None or df_eval.empty:
-        st.info("File cache daily trống, không có dữ liệu để hiển thị.")
-        return
-
-    # Chuẩn hóa cột Date
-    if "Date" not in df_eval.columns or "DailyActual" not in df_eval.columns:
-        st.warning(
-            "File cache daily không có đủ cột 'Date' / 'DailyActual'. Kiểm tra lại file precompute."
-        )
-        return
-
-    df_eval = df_eval.copy()
-    df_eval["Date"] = pd.to_datetime(df_eval["Date"]).dt.normalize()
-    # ----------------------------------------------------------
-    # Fallback: nếu cache chưa có Daily_ARIMA / Daily_SARIMA,
-    # nhưng app import được ARIMA/SARIMA thì tính bổ sung tại chỗ.
-    # ----------------------------------------------------------
-    dates = df_eval["Date"].dropna().drop_duplicates().sort_values().tolist()
-
-    # ---- Fallback ARIMA ----
-    if HAS_ARIMA and forecast_arima_for_day is not None and "Daily_ARIMA" not in df_eval.columns:
-        records = []
-        for d in dates:
-            day_start = pd.Timestamp(d).normalize()
-            day_end = day_start + pd.Timedelta(days=1)
-
-            try:
-                # theo fix trước đây: forecast_arima_for_day(df_full, day_start)
-                out = forecast_arima_for_day(df_full, day_start)
-                if isinstance(out, tuple):
-                    df_fc_arima = out[0]
-                else:
-                    df_fc_arima = out
-            except Exception as ex:
-                print(f"[Daily-ARIMA] error {day_start.date()}: {ex}")
-                continue
-
-            if df_fc_arima is None or df_fc_arima.empty:
-                continue
-
-            df_a = df_fc_arima.copy()
-            df_a["DateTime"] = pd.to_datetime(df_a["DateTime"], errors="coerce")
-            df_a = df_a.dropna(subset=["DateTime"])
-            df_a = df_a[
-                (df_a["DateTime"] >= day_start)
-                & (df_a["DateTime"] < day_end)
-                ]
-            if df_a.empty:
-                continue
-
-            # tuỳ arima_utils: ưu tiên Pred_ARIMA, fallback PredictedVehicles
-            pred_col = "Pred_ARIMA" if "Pred_ARIMA" in df_a.columns else "PredictedVehicles"
-            if pred_col not in df_a.columns:
-                continue
-
-            v = float(df_a[pred_col].sum())
-            records.append({"Date": day_start, "DailyPred": v})
-
-        if records:
-            df_arima = (
-                pd.DataFrame(records)
-                .groupby("Date", as_index=False)["DailyPred"]
-                .mean()
-                .rename(columns={"DailyPred": "Daily_ARIMA"})
+        if not cache_path.exists():
+            st.info(
+                f"⚠️ Chưa tìm thấy file cache daily: {cache_path}. "
+                "Hãy chạy scripts/precompute_daily_3months.py trước, hoặc bật lại chế độ tính trực tiếp trong app."
             )
-            df_eval = df_eval.merge(df_arima, on="Date", how="left")
+            return
 
-    # ---- Fallback SARIMA ----
-    if HAS_SARIMA and forecast_sarima_for_day is not None and "Daily_SARIMA" not in df_eval.columns:
-        records = []
-        for d in dates:
-            day_start = pd.Timestamp(d).normalize()
-            day_end = day_start + pd.Timedelta(days=1)
+        try:
+            df_eval = pd.read_parquet(cache_path)
+        except Exception as ex:
+            st.error(f"Lỗi đọc file cache daily: {ex}")
+            return
 
-            try:
-                out = forecast_sarima_for_day(df_full, day_start)
-                if isinstance(out, tuple):
-                    df_fc_sarima = out[0]
-                else:
-                    df_fc_sarima = out
-            except Exception as ex:
-                print(f"[Daily-SARIMA] error {day_start.date()}: {ex}")
-                continue
+        if df_eval is None or df_eval.empty:
+            st.info("File cache daily trống, không có dữ liệu để hiển thị.")
+            return
 
-            if df_fc_sarima is None or df_fc_sarima.empty:
-                continue
-
-            df_s = df_fc_sarima.copy()
-            df_s["DateTime"] = pd.to_datetime(df_s["DateTime"], errors="coerce")
-            df_s = df_s.dropna(subset=["DateTime"])
-            df_s = df_s[
-                (df_s["DateTime"] >= day_start)
-                & (df_s["DateTime"] < day_end)
-                ]
-            if df_s.empty:
-                continue
-
-            pred_col = "Pred_SARIMA" if "Pred_SARIMA" in df_s.columns else "PredictedVehicles"
-            if pred_col not in df_s.columns:
-                continue
-
-            v = float(df_s[pred_col].sum())
-            records.append({"Date": day_start, "DailyPred": v})
-
-        if records:
-            df_sarima = (
-                pd.DataFrame(records)
-                .groupby("Date", as_index=False)["DailyPred"]
-                .mean()
-                .rename(columns={"DailyPred": "Daily_SARIMA"})
+        # Chuẩn hóa cột Date
+        if "Date" not in df_eval.columns or "DailyActual" not in df_eval.columns:
+            st.warning(
+                "File cache daily không có đủ cột 'Date' / 'DailyActual'. Kiểm tra lại file precompute."
             )
-            df_eval = df_eval.merge(df_sarima, on="Date", how="left")
+            return
 
-    # ==== Metrics tổng 3 tháng cho từng model (nếu có cột) ====
-    metrics_rows = []
-    for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
-        col_name = f"Daily_{m_name}"
-        if col_name not in df_eval.columns:
-            continue
-        valid = df_eval[["DailyActual", col_name]].dropna()
-        if valid.empty:
-            continue
+        df_eval = df_eval.copy()
+        df_eval["Date"] = pd.to_datetime(df_eval["Date"]).dt.normalize()
+        # ----------------------------------------------------------
+        # Fallback: nếu cache chưa có Daily_ARIMA / Daily_SARIMA,
+        # nhưng app import được ARIMA/SARIMA thì tính bổ sung tại chỗ.
+        # ----------------------------------------------------------
+        dates = df_eval["Date"].dropna().drop_duplicates().sort_values().tolist()
 
-        actual = valid["DailyActual"].values.astype(float)
-        pred = valid[col_name].values.astype(float)
+        # ---- Fallback ARIMA ----
+        if HAS_ARIMA and forecast_arima_for_day is not None and "Daily_ARIMA" not in df_eval.columns:
+            records = []
+            for d in dates:
+                day_start = pd.Timestamp(d).normalize()
+                day_end = day_start + pd.Timedelta(days=1)
 
-        mse = mean_squared_error(actual, pred)
-        rmse = np.sqrt(mse)
-        mae = mean_absolute_error(actual, pred)
+                try:
+                    # theo fix trước đây: forecast_arima_for_day(df_full, day_start)
+                    out = forecast_arima_for_day(df_full, day_start)
+                    if isinstance(out, tuple):
+                        df_fc_arima = out[0]
+                    else:
+                        df_fc_arima = out
+                except Exception as ex:
+                    print(f"[Daily-ARIMA] error {day_start.date()}: {ex}")
+                    continue
 
-        if np.any(actual != 0):
-            mape = (
-                np.mean(
-                    np.abs((actual - pred)[actual != 0] / actual[actual != 0])
+                if df_fc_arima is None or df_fc_arima.empty:
+                    continue
+
+                df_a = df_fc_arima.copy()
+                df_a["DateTime"] = pd.to_datetime(df_a["DateTime"], errors="coerce")
+                df_a = df_a.dropna(subset=["DateTime"])
+                df_a = df_a[
+                    (df_a["DateTime"] >= day_start)
+                    & (df_a["DateTime"] < day_end)
+                    ]
+                if df_a.empty:
+                    continue
+
+                # tuỳ arima_utils: ưu tiên Pred_ARIMA, fallback PredictedVehicles
+                pred_col = "Pred_ARIMA" if "Pred_ARIMA" in df_a.columns else "PredictedVehicles"
+                if pred_col not in df_a.columns:
+                    continue
+
+                v = float(df_a[pred_col].sum())
+                records.append({"Date": day_start, "DailyPred": v})
+
+            if records:
+                df_arima = (
+                    pd.DataFrame(records)
+                    .groupby("Date", as_index=False)["DailyPred"]
+                    .mean()
+                    .rename(columns={"DailyPred": "Daily_ARIMA"})
                 )
-                * 100.0
+                df_eval = df_eval.merge(df_arima, on="Date", how="left")
+
+        # ---- Fallback SARIMA ----
+        if HAS_SARIMA and forecast_sarima_for_day is not None and "Daily_SARIMA" not in df_eval.columns:
+            records = []
+            for d in dates:
+                day_start = pd.Timestamp(d).normalize()
+                day_end = day_start + pd.Timedelta(days=1)
+
+                try:
+                    out = forecast_sarima_for_day(df_full, day_start)
+                    if isinstance(out, tuple):
+                        df_fc_sarima = out[0]
+                    else:
+                        df_fc_sarima = out
+                except Exception as ex:
+                    print(f"[Daily-SARIMA] error {day_start.date()}: {ex}")
+                    continue
+
+                if df_fc_sarima is None or df_fc_sarima.empty:
+                    continue
+
+                df_s = df_fc_sarima.copy()
+                df_s["DateTime"] = pd.to_datetime(df_s["DateTime"], errors="coerce")
+                df_s = df_s.dropna(subset=["DateTime"])
+                df_s = df_s[
+                    (df_s["DateTime"] >= day_start)
+                    & (df_s["DateTime"] < day_end)
+                    ]
+                if df_s.empty:
+                    continue
+
+                pred_col = "Pred_SARIMA" if "Pred_SARIMA" in df_s.columns else "PredictedVehicles"
+                if pred_col not in df_s.columns:
+                    continue
+
+                v = float(df_s[pred_col].sum())
+                records.append({"Date": day_start, "DailyPred": v})
+
+            if records:
+                df_sarima = (
+                    pd.DataFrame(records)
+                    .groupby("Date", as_index=False)["DailyPred"]
+                    .mean()
+                    .rename(columns={"DailyPred": "Daily_SARIMA"})
+                )
+                df_eval = df_eval.merge(df_sarima, on="Date", how="left")
+
+
+
+        # ---- Tab ----
+        tab_cmp_daily, tab_cmp_weekly, tab_cmp_monthly = st.tabs(["Daily", "Weekly", "Monthly"])
+
+        # -----------------
+        # 7.1 Tab Daily
+        # -----------------
+        with tab_cmp_daily:
+            st.subheader("DAILY (Actual + Models) – 3 tháng gần nhất")
+            # ==== Chart multi-line (Actual + Models) ====
+            frames = [
+                df_eval[["Date", "DailyActual"]]
+                .rename(columns={"DailyActual": "DailyValue"})
+                .assign(Source="Actual")
+            ]
+
+            for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
+                col_name = f"Daily_{m_name}"
+                if col_name in df_eval.columns and df_eval[col_name].notna().any():
+                    frames.append(
+                        df_eval[["Date", col_name]]
+                        .rename(columns={col_name: "DailyValue"})
+                        .assign(Source=m_name)
+                    )
+
+            if frames:
+                df_chart = pd.concat(frames, ignore_index=True)
+                df_chart = df_chart.sort_values("Date")
+
+                chart_daily = (
+                    alt.Chart(df_chart)
+                    .mark_line(point=True)
+                    .encode(
+                        x=alt.X("Date:T", title="Date"),
+                        y=alt.Y("DailyValue:Q", title="Vehicles / day"),
+                        color=alt.Color("Source:N", title="Series"),
+                        tooltip=[
+                            alt.Tooltip("Date:T", title="Date"),
+                            alt.Tooltip("Source:N", title="Series"),
+                            alt.Tooltip("DailyValue:Q", title="Vehicles/day", format=","),
+                        ],
+                    )
+                    .properties(height=300)
+                )
+                st.altair_chart(chart_daily, use_container_width=True)
+
+                with st.expander(
+                        "🔍 Xem bảng daily (Actual + Models) – 3 tháng gần nhất"
+                ):
+                    df_show = df_eval.copy()
+                    for c in df_show.columns:
+                        if c.startswith("Daily"):
+                            df_show[c] = df_show[c].round().astype("Int64")
+                    st.dataframe(df_show.sort_values("Date"), use_container_width=True)
+            else:
+                st.info("Không có series nào (GRU/RNN/LSTM/ARIMA/SARIMA) để hiển thị.")
+
+            # ==== Metrics tổng 3 tháng cho từng model (nếu có cột) ====
+            metrics_rows = []
+            for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
+                col_name = f"Daily_{m_name}"
+                if col_name not in df_eval.columns:
+                    continue
+                valid = df_eval[["DailyActual", col_name]].dropna()
+                if valid.empty:
+                    continue
+
+                actual = valid["DailyActual"].values.astype(float)
+                pred = valid[col_name].values.astype(float)
+
+                mse = mean_squared_error(actual, pred)
+                rmse = np.sqrt(mse)
+                mae = mean_absolute_error(actual, pred)
+
+                if np.any(actual != 0):
+                    mape = (
+                            np.mean(
+                                np.abs((actual - pred)[actual != 0] / actual[actual != 0])
+                            )
+                            * 100.0
+                    )
+                else:
+                    mape = np.nan
+
+                denom = np.abs(actual) + np.abs(pred)
+                smape = (
+                        np.mean(
+                            2.0 * np.abs(pred - actual) / np.where(denom == 0, 1.0, denom)
+                        )
+                        * 100.0
+                )
+
+                r2 = r2_score(actual, pred)
+
+                metrics_rows.append(
+                    {
+                        "Model": m_name,
+                        "MSE": mse,
+                        "RMSE": rmse,
+                        "MAE": mae,
+                        "MAPE (%)": mape,
+                        "SMAPE (%)": smape,
+                        "R²": r2,
+                    }
+                )
+
+            if metrics_rows:
+                st.subheader(" Đánh giá sai số theo từng model trong 3 tháng gần nhất")
+                df_metrics = pd.DataFrame(metrics_rows)
+                for c in ["MSE", "RMSE", "MAE"]:
+                    df_metrics[c] = df_metrics[c].round(2)
+                for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
+                    df_metrics[c] = df_metrics[c].round(3)
+                st.dataframe(df_metrics, use_container_width=True)
+
+            # ==== Biểu đồ cột cho từng metric (Daily) ====
+            st.subheader("Biểu đồ cột cho từng metric (Daily)")
+            metrics_list = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
+            cols = st.columns(2) # Tạo layout 2 cột
+
+            for i, metric in enumerate(metrics_list):
+                chart = (
+                    alt.Chart(df_metrics)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("Model:N", title="Model", axis=alt.Axis(labelAngle=0)),
+                        y=alt.Y(f"{metric}:Q", title=metric),
+                        tooltip=["Model", metric]
+                    )
+                    .properties(height=300, title=f"{metric}")
+                )
+
+                # Vẽ đúng cột (0 hoặc 1)
+                cols[i % 2].altair_chart(chart, use_container_width=True)
+
+                # Sau mỗi 2 biểu đồ → tạo hàng mới
+                if i % 2 == 1 and i < len(metrics_list) - 1:
+                    cols = st.columns(2)
+
+        # -----------------
+        # 7.2 Tab Weekly
+        # -----------------
+        with tab_cmp_weekly:
+
+            df_weekly = df_show.copy()
+            df_weekly["Date"] = pd.to_datetime(df_weekly["Date"])
+
+            # Convert thành tuần
+            df_weekly["WeekStart"] = df_weekly["Date"].dt.to_period("W").apply(lambda r: r.start_time)
+            df_weekly["WeekEnd"] = df_weekly["Date"].dt.to_period("W").apply(lambda r: r.end_time)
+
+            # Gom weekly (sum cho traffic)
+            # Lấy toàn bộ cột Daily_*
+            daily_cols = [c for c in df_weekly.columns if c.startswith("Daily")]
+
+            # Tạo dict động cho agg
+            agg_dict = {c: "sum" for c in daily_cols}
+
+            # Group
+            df_weekly = (
+                df_weekly.groupby(["WeekStart", "WeekEnd"])
+                .agg(agg_dict)
+                .reset_index()
             )
-        else:
-            mape = np.nan
 
-        denom = np.abs(actual) + np.abs(pred)
-        smape = (
-            np.mean(
-                2.0 * np.abs(pred - actual) / np.where(denom == 0, 1.0, denom)
-            )
-            * 100.0
-        )
-
-        r2 = r2_score(actual, pred)
-
-        metrics_rows.append(
-            {
-                "Model": m_name,
-                "MSE": mse,
-                "RMSE": rmse,
-                "MAE": mae,
-                "MAPE (%)": mape,
-                "SMAPE (%)": smape,
-                "R²": r2,
-            }
-        )
-
-    if metrics_rows:
-        st.subheader(" Đánh gía sai số theo từng model trong 3 tháng gần nhất")
-        df_metrics = pd.DataFrame(metrics_rows)
-        for c in ["MSE", "RMSE", "MAE"]:
-            df_metrics[c] = df_metrics[c].round(2)
-        for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
-            df_metrics[c] = df_metrics[c].round(3)
-        st.dataframe(df_metrics, use_container_width=True)
-
-    # ==== Chart multi-line (Actual + Models) ====
-    frames = [
-        df_eval[["Date", "DailyActual"]]
-        .rename(columns={"DailyActual": "DailyValue"})
-        .assign(Source="Actual")
-    ]
-
-    for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
-        col_name = f"Daily_{m_name}"
-        if col_name in df_eval.columns and df_eval[col_name].notna().any():
-            frames.append(
-                df_eval[["Date", col_name]]
-                .rename(columns={col_name: "DailyValue"})
-                .assign(Source=m_name)
+            # Đổi tên cột Daily* → Weekly*
+            df_weekly = df_weekly.rename(
+                columns={c: c.replace("Daily", "Weekly") for c in daily_cols}
             )
 
-    if frames:
-        df_chart = pd.concat(frames, ignore_index=True)
-        df_chart = df_chart.sort_values("Date")
+            # Format range: YYYY-MM-DD → YYYY-MM-DD
+            df_weekly["WeekRange"] = df_weekly["WeekStart"].dt.strftime("%Y-%m-%d") + " → " + \
+                                     df_weekly["WeekEnd"].dt.strftime("%Y-%m-%d")
 
-        chart_daily = (
-            alt.Chart(df_chart)
-            .mark_line(point=True)
-            .encode(
-                x=alt.X("Date:T", title="Date"),
-                y=alt.Y("DailyValue:Q", title="Vehicles / day"),
-                color=alt.Color("Source:N", title="Series"),
-                tooltip=[
-                    alt.Tooltip("Date:T", title="Date"),
-                    alt.Tooltip("Source:N", title="Series"),
-                    alt.Tooltip("DailyValue:Q", title="Vehicles/day", format=","),
-                ],
+            # ==== Chart multi-line Weekly (Actual + Models) ====
+            st.subheader("WEEKLY (Actual + Models) – 3 tháng gần nhất")
+
+            frames = [
+                df_weekly[["WeekStart", "WeeklyActual"]]
+                .rename(columns={"WeeklyActual": "WeeklyValue"})
+                .assign(Source="Actual")
+            ]
+
+            for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
+                col_name = f"Weekly_{m_name}"
+                if col_name in df_weekly.columns and df_weekly[col_name].notna().any():
+                    frames.append(
+                        df_weekly[["WeekStart", col_name]]
+                        .rename(columns={col_name: "WeeklyValue"})
+                        .assign(Source=m_name)
+                    )
+
+            if frames:
+                df_chart_w = pd.concat(frames, ignore_index=True)
+                df_chart_w = df_chart_w.sort_values("WeekStart")
+
+                chart_weekly = (
+                    alt.Chart(df_chart_w)
+                    .mark_line(point=True)
+                    .encode(
+                        x=alt.X("WeekStart:T", title="Week (Start Date)"),
+                        y=alt.Y("WeeklyValue:Q", title="Vehicles / week"),
+                        color=alt.Color("Source:N", title="Series"),
+                        tooltip=[
+                            alt.Tooltip("WeekStart:T", title="Week Start"),
+                            alt.Tooltip("Source:N", title="Series"),
+                            alt.Tooltip("WeeklyValue:Q", title="Vehicles/week", format=","),
+                        ],
+                    )
+                    .properties(height=300)
+                )
+                st.altair_chart(chart_weekly, use_container_width=True)
+
+                with st.expander("Xem bảng Weekly (Actual + Models) – tổng hợp theo tuần"):
+                    st.dataframe(
+                        df_weekly[["WeekRange"] +
+                                  [c for c in df_weekly.columns if
+                                   c not in ["Date", "Year", "Week", "WeekRange", "WeekStart", "WeekEnd"]]],
+                        use_container_width=True
+                    )
+            else:
+                st.info("Không có series nào (GRU/RNN/LSTM/ARIMA/SARIMA) để hiển thị.")
+
+            # ==== Metrics tổng Weekly cho từng model (nếu có cột) ====
+            metrics_rows = []
+
+            for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
+                col_name = f"Weekly_{m_name}"
+                if col_name not in df_weekly.columns:
+                    continue
+
+                valid = df_weekly[["WeeklyActual", col_name]].dropna()
+                if valid.empty:
+                    continue
+
+                actual = valid["WeeklyActual"].values.astype(float)
+                pred = valid[col_name].values.astype(float)
+
+                # Sai số
+                mse = mean_squared_error(actual, pred)
+                rmse = np.sqrt(mse)
+                mae = mean_absolute_error(actual, pred)
+
+                mape = (
+                        np.mean(np.abs((actual - pred) / np.where(actual == 0, np.nan, actual))) * 100
+                )
+
+                denom = np.abs(actual) + np.abs(pred)
+                smape = (
+                        np.mean(2.0 * np.abs(pred - actual) / np.where(denom == 0, 1.0, denom)) * 100
+                )
+
+                r2 = r2_score(actual, pred)
+
+                metrics_rows.append(
+                    {
+                        "Model": m_name,
+                        "MSE": mse,
+                        "RMSE": rmse,
+                        "MAE": mae,
+                        "MAPE (%)": mape,
+                        "SMAPE (%)": smape,
+                        "R²": r2,
+                    }
+                )
+
+            if metrics_rows:
+                st.subheader("Đánh giá sai số theo từng model – dữ liệu Weekly (3 tháng gần nhất)")
+                df_metrics_weekly = pd.DataFrame(metrics_rows)
+
+                for c in ["MSE", "RMSE", "MAE"]:
+                    df_metrics_weekly[c] = df_metrics_weekly[c].round(2)
+                for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
+                    df_metrics_weekly[c] = df_metrics_weekly[c].round(3)
+
+                st.dataframe(df_metrics_weekly, use_container_width=True)
+
+            else:
+                st.info("Không có dữ liệu Weekly để tính metrics.")
+
+            # ==== Biểu đồ cột cho từng metric (Weekly) ====
+            st.subheader("Biểu đồ cột cho từng metric (Weekly)")
+            metrics_list = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
+            cols = st.columns(2)  # 2 cột mỗi hàng
+
+            for i, metric in enumerate(metrics_list):
+                chart = (
+                    alt.Chart(df_metrics_weekly)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("Model:N", title="Model", axis=alt.Axis(labelAngle=0)),
+                        y=alt.Y(f"{metric}:Q", title=metric),
+                        tooltip=["Model", metric]
+                    )
+                    .properties(height=300, title=f"{metric}")
+                )
+
+                # vẽ vào đúng cột
+                cols[i % 2].altair_chart(chart, use_container_width=True)
+
+                # tạo hàng kế tiếp sau mỗi 2 chart
+                if i % 2 == 1 and i < len(metrics_list) - 1:
+                    cols = st.columns(2)
+
+        # -----------------
+        # 7.2 Tab Monthly
+        # -----------------
+        with tab_cmp_monthly:
+            df_monthly = df_show.copy()
+            df_monthly["Date"] = pd.to_datetime(df_monthly["Date"])
+
+            # Convert thành tháng
+            df_monthly["MonthStart"] = df_monthly["Date"].dt.to_period("M").apply(lambda r: r.start_time)
+            df_monthly["MonthEnd"] = df_monthly["Date"].dt.to_period("M").apply(lambda r: r.end_time)
+
+            # Gom monthly (sum cho traffic)
+            daily_cols = [c for c in df_monthly.columns if c.startswith("Daily")]
+
+            agg_dict = {c: "sum" for c in daily_cols}
+
+            df_monthly = (
+                df_monthly.groupby(["MonthStart", "MonthEnd"])
+                .agg(agg_dict)
+                .reset_index()
             )
-            .properties(height=300)
-        )
-        st.altair_chart(chart_daily, use_container_width=True)
 
-        with st.expander(
-            "🔍 Xem bảng daily (Actual + Models) – 3 tháng gần nhất"
-        ):
-            df_show = df_eval.copy()
-            for c in df_show.columns:
-                if c.startswith("Daily"):
-                    df_show[c] = df_show[c].round().astype("Int64")
-            st.dataframe(df_show.sort_values("Date"), use_container_width=True)
-    else:
-        st.info("Không có series nào (GRU/RNN/LSTM/ARIMA/SARIMA) để hiển thị.")
+            # Đổi tên Daily* → Monthly*
+            df_monthly = df_monthly.rename(
+                columns={c: c.replace("Daily", "Monthly") for c in daily_cols}
+            )
 
+            # Hiển thị dạng "YYYY-MM-DD → YYYY-MM-DD"
+            df_monthly["MonthRange"] = (
+                    df_monthly["MonthStart"].dt.strftime("%Y-%m-%d") +
+                    " → " +
+                    df_monthly["MonthEnd"].dt.strftime("%Y-%m-%d")
+            )
 
+            # ==== Chart multi-line Monthly (Actual + Models) ====
+            st.subheader("MONTHLY (Actual + Models) – 3 tháng gần nhất")
+
+            frames_m = [
+                df_monthly[["MonthStart", "MonthlyActual"]]
+                .rename(columns={"MonthlyActual": "MonthlyValue"})
+                .assign(Source="Actual")
+            ]
+
+            for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
+                col_name = f"Monthly_{m_name}"
+                if col_name in df_monthly.columns and df_monthly[col_name].notna().any():
+                    frames_m.append(
+                        df_monthly[["MonthStart", col_name]]
+                        .rename(columns={col_name: "MonthlyValue"})
+                        .assign(Source=m_name)
+                    )
+
+            df_chart_m = pd.concat(frames_m, ignore_index=True).sort_values("MonthStart")
+
+            chart_monthly = (
+                alt.Chart(df_chart_m)
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X("MonthStart:T", title="Month (Start Date)"),
+                    y=alt.Y("MonthlyValue:Q", title="Vehicles / month"),
+                    color=alt.Color("Source:N"),
+                    tooltip=[
+                        alt.Tooltip("MonthStart:T", title="Month Start"),
+                        alt.Tooltip("Source:N", title="Series"),
+                        alt.Tooltip("MonthlyValue:Q", format=","),
+                    ],
+                )
+                .properties(height=300)
+            )
+
+            st.altair_chart(chart_monthly, use_container_width=True)
+
+            with st.expander("Xem bảng Monthly (Actual + Models)"):
+                st.dataframe(
+                    df_monthly[
+                        ["MonthRange"] +
+                        [c for c in df_monthly.columns if c not in
+                         ["Date", "MonthStart", "MonthEnd", "MonthRange"]]
+                        ],
+                    use_container_width=True
+                )
+
+            # ==== Metrics tổng Weekly cho từng model (nếu có cột) ====
+            metrics_rows = []
+
+            for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
+                col_name = f"Monthly_{m_name}"
+                if col_name not in df_monthly.columns:
+                    continue
+
+                valid = df_monthly[["MonthlyActual", col_name]].dropna()
+                if valid.empty:
+                    continue
+
+                actual = valid["MonthlyActual"].values.astype(float)
+                pred = valid[col_name].values.astype(float)
+
+                mse = mean_squared_error(actual, pred)
+                rmse = np.sqrt(mse)
+                mae = mean_absolute_error(actual, pred)
+                mape = np.mean(np.abs((actual - pred) / np.where(actual == 0, np.nan, actual))) * 100
+
+                denom = np.abs(actual) + np.abs(pred)
+                smape = np.mean(2 * np.abs(pred - actual) / np.where(denom == 0, 1, denom)) * 100
+
+                r2 = r2_score(actual, pred)
+
+                metrics_rows.append({
+                    "Model": m_name,
+                    "MSE": mse,
+                    "RMSE": rmse,
+                    "MAE": mae,
+                    "MAPE (%)": mape,
+                    "SMAPE (%)": smape,
+                    "R²": r2
+                })
+
+            if metrics_rows:
+                df_metrics_monthly = pd.DataFrame(metrics_rows)
+                for c in ["MSE", "RMSE", "MAE"]:
+                    df_metrics_monthly[c] = df_metrics_monthly[c].round(2)
+                for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
+                    df_metrics_monthly[c] = df_metrics_monthly[c].round(3)
+
+                st.subheader("Đánh giá sai số theo từng model – dữ liệu Monthly")
+                st.dataframe(df_metrics_monthly, use_container_width=True)
+
+            # ==== Biểu đồ cột cho từng metric (Monthly) ====
+            st.subheader("Biểu đồ cột cho từng metric (Monthly)")
+            metrics_list = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
+            cols = st.columns(2)
+
+            for i, metric in enumerate(metrics_list):
+                chart = (
+                    alt.Chart(df_metrics_monthly)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("Model:N", title="Model", axis=alt.Axis(labelAngle=0)),
+                        y=alt.Y(f"{metric}:Q", title=metric),
+                        tooltip=["Model", metric]
+                    )
+                    .properties(height=300, title=f"{metric}")
+                )
+
+                cols[i % 2].altair_chart(chart, use_container_width=True)
+
+                if i % 2 == 1 and i < len(metrics_list) - 1:
+                    cols = st.columns(2)
 
 
 if __name__ == "__main__":
