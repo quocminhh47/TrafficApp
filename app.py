@@ -896,7 +896,7 @@ def main():
     #     Actual vs GRU / RNN / LSTM / ARIMA / SARIMA + Metrics tổng 3 tháng
     # ====================================
     elif tab == "DAILY TRAFFIC":
-        st.header("📊 Daily traffic – 3 tháng gần nhất (Actual vs Predicted by models)")
+        st.header("📚 Daily traffic – 3 tháng gần nhất (Actual vs Predicted by models)")
 
         # Đọc cache do script precompute_daily_3months.py sinh ra:
         #   model/<family_name>/<route_id>_daily_3months.parquet
@@ -1029,8 +1029,6 @@ def main():
                 )
                 df_eval = df_eval.merge(df_sarima, on="Date", how="left")
 
-
-
         # ---- Tab ----
         tab_cmp_daily, tab_cmp_weekly, tab_cmp_monthly = st.tabs(["Daily", "Weekly", "Monthly"])
 
@@ -1145,8 +1143,8 @@ def main():
                     df_metrics[c] = df_metrics[c].round(3)
                 st.dataframe(df_metrics, use_container_width=True)
 
-            # ==== Biểu đồ cột cho từng metric (Daily) ====
-            st.subheader("Biểu đồ cột cho từng metric (Daily)")
+            # ==== Biểu đồ cột cho từng đánh giá ====
+            st.subheader("📊 Biểu đồ cột cho từng đánh giá sai số")
             metrics_list = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
             cols = st.columns(2) # Tạo layout 2 cột
 
@@ -1159,7 +1157,16 @@ def main():
                         y=alt.Y(f"{metric}:Q", title=metric),
                         tooltip=["Model", metric]
                     )
-                    .properties(height=300, title=f"{metric}")
+                    .properties(
+                        height=300,
+                        title=alt.TitleParams(
+                            f"{metric}",
+                            fontSize=24,
+                            fontWeight="bold",
+                            color="#333",
+                            anchor="middle"  # căn giữa
+                        )
+                    )
                 )
 
                 # Vẽ đúng cột (0 hoặc 1)
@@ -1310,8 +1317,8 @@ def main():
             else:
                 st.info("Không có dữ liệu Weekly để tính metrics.")
 
-            # ==== Biểu đồ cột cho từng metric (Weekly) ====
-            st.subheader("Biểu đồ cột cho từng metric (Weekly)")
+            # ==== Biểu đồ cột cho từng đánh giá ====
+            st.subheader("📊 Biểu đồ cột cho từng đánh giá sai số")
             metrics_list = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
             cols = st.columns(2)  # 2 cột mỗi hàng
 
@@ -1324,7 +1331,16 @@ def main():
                         y=alt.Y(f"{metric}:Q", title=metric),
                         tooltip=["Model", metric]
                     )
-                    .properties(height=300, title=f"{metric}")
+                    .properties(
+                        height=300,
+                        title=alt.TitleParams(
+                            f"{metric}",
+                            fontSize=24,
+                            fontWeight="bold",
+                            color="#333",
+                            anchor="middle"  # căn giữa
+                        )
+                    )
                 )
 
                 # vẽ vào đúng cột
@@ -1461,8 +1477,8 @@ def main():
                 st.subheader("Đánh giá sai số theo từng model – dữ liệu Monthly")
                 st.dataframe(df_metrics_monthly, use_container_width=True)
 
-            # ==== Biểu đồ cột cho từng metric (Monthly) ====
-            st.subheader("Biểu đồ cột cho từng metric (Monthly)")
+            # ==== Biểu đồ cột cho từng đánh giá ====
+            st.subheader("📊 Biểu đồ cột cho từng đánh giá sai số")
             metrics_list = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
             cols = st.columns(2)
 
@@ -1475,7 +1491,16 @@ def main():
                         y=alt.Y(f"{metric}:Q", title=metric),
                         tooltip=["Model", metric]
                     )
-                    .properties(height=300, title=f"{metric}")
+                    .properties(
+                        height=300,
+                        title=alt.TitleParams(
+                            f"{metric}",
+                            fontSize=24,
+                            fontWeight="bold",
+                            color="#333",
+                            anchor="middle"  # căn giữa
+                        )
+                    )
                 )
 
                 cols[i % 2].altair_chart(chart, use_container_width=True)
