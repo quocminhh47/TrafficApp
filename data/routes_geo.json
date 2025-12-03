@@ -50,14 +50,6 @@
   {
     "city": "HoChiMinh",
     "zone": "HCMC",
-    "route_id": "quang_trung",
-    "name": "Quang Trung (HCMC)",
-    "lat": 10.840136577605119,
-    "lon": 106.65209646590493
-  },
-  {
-    "city": "HoChiMinh",
-    "zone": "HCMC",
     "route_id": "nguyen_dinh_chieu",
     "name": "Nguyễn Ðình Chiểu (HCMC)",
     "lat": 10.779813410913704,
