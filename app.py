@@ -6,7 +6,7 @@ import numpy as np
 from pathlib import Path
 import joblib
 import json
-import tensorflow as tf
+import os
 
 from functools import lru_cache
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
@@ -22,6 +22,98 @@ from modules.model_utils import (
     forecast_week_after_last_point,
 )
 from modules.model_manager import load_model_context
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# =========================
+# HCMC: cấu hình cho travel-time
+# =========================
+
+# Chiều dài xấp xỉ của từng tuyến (km) – bạn có thể chỉnh lại cho sát thực tế hơn
+HCMC_ROUTE_LENGTH_KM = {
+    "ly_thuong_kiet": 4.3,
+    "nguyen_kiem": 3.8,
+    "quang_trung": 5.6,
+    "nguyen_dinh_chieu": 3.2,
+    "le_duc_tho": 7.2,
+    "quoc_lo_1a": 51.0,
+    "to_hien_thanh": 2.1,
+    "truong_chinh": 8.5
+}
+
+HCMC_DEFAULT_LENGTH_KM = 4.0          # nếu route chưa có trong dict trên
+HCMC_FREE_FLOW_SPEED_KMH = 40.0       # tốc độ "thoáng" mặc định trong nội đô
+
+# =====================================================
+# HÀM TÍNH CHỈ SỐ ĐÁNH GIÁ CHUNG CHO UI
+# =====================================================
+
+def compute_common_metrics(
+    y_true,
+    y_pred,
+    *,
+    task: str = "regression",
+    acc_tolerance: float = 0.2,
+    threshold: float = 0.5,
+) -> dict:
+    """
+    MSE / RMSE / MAE / SMAPE / Accuracy – dùng cho UI.
+
+    - task="regression": I-94, Fremont, v.v.
+        Accuracy = % điểm có sai số tương đối <= acc_tolerance.
+    - task="binary_prob": HCMC congestion.
+        Accuracy = accuracy nhị phân sau khi threshold.
+    """
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+
+    mask = ~np.isnan(y_true) & ~np.isnan(y_pred)
+    if not np.any(mask):
+        return {
+            "MSE": np.nan,
+            "RMSE": np.nan,
+            "MAE": np.nan,
+            "SMAPE": np.nan,
+            "Accuracy": np.nan,
+        }
+
+    y_true = y_true[mask]
+    y_pred = y_pred[mask]
+
+    diff = y_pred - y_true
+    mse = float(np.mean(diff**2))
+    rmse = float(np.sqrt(mse))
+    mae = float(np.mean(np.abs(diff)))
+
+    denom = np.abs(y_true) + np.abs(y_pred)
+    smape = float(
+        np.mean(
+            2.0 * np.abs(diff) / (denom + 1e-8)
+        )
+        * 100.0
+    )
+
+    if task == "regression":
+        rel_err = np.abs(diff) / (np.abs(y_true) + 1e-8)
+        acc = float(np.mean(rel_err <= acc_tolerance) * 100.0)
+    elif task == "binary_prob":
+        y_bin = (y_pred >= threshold).astype(float)
+        acc = float(np.mean(y_bin == y_true) * 100.0)
+    else:
+        acc = np.nan
+
+    return {
+        "MSE": mse,
+        "RMSE": rmse,
+        "MAE": mae,
+        "SMAPE": smape,
+        "Accuracy": acc,
+    }
+
+
+def get_hcmc_route_length_km(route_id: str) -> float:
+    """Trả về chiều dài tuyến (km), nếu không có thì dùng default."""
+    return HCMC_ROUTE_LENGTH_KM.get(route_id, HCMC_DEFAULT_LENGTH_KM)
+
 
 # ARIMA / SARIMA (optional)
 try:
@@ -322,6 +414,786 @@ def load_top2_summary(family_name: str, route_id: str):
         print(f"[load_top2_summary] Error reading {summary_path}: {ex}")
         return None
 
+# ==== HCMC CONGESTION – GRU dự báo Mức độ kẹt xe 2h tới ====
+
+HCMC_CSV_PATH = Path("data/raw/hcmc/train.csv")
+HCMC_LOOKBACK = 16          # phải khớp với LOOKBACK khi train GRU HCMC
+HCMC_STEP_MINUTES = 30      # mỗi period = 30'
+HCMC_FC_STEPS = 4           # 4 bước = 2 giờ tới
+
+
+def render_hcmc_eval_summary_for_route(route_id: str):
+    """
+    Đọc hcmc_eval_summary.csv và hiển thị MSE / RMSE / MAE / SMAPE / Accuracy
+    cho tuyến HCMC đang chọn.
+    """
+    eval_path = os.path.join(BASE_DIR, "data", "hcmc_eval", "hcmc_eval_summary.csv")
+    if not os.path.exists(eval_path):
+        st.info("Chưa tìm thấy file đánh giá HCMC (hcmc_eval_summary.csv).")
+        return
+
+    df = pd.read_csv(eval_path)
+
+    if "slug" not in df.columns:
+        st.warning("File summary không có cột 'slug'.")
+        return
+
+    row = df[df["slug"] == route_id]
+    if row.empty:
+        st.info("Chưa có metric đánh giá cho tuyến này.")
+        return
+
+    r = row.iloc[0]
+
+    st.markdown("### 📊 Đánh giá độ tin cậy mô hình (HCMC)")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("MSE", f"{r['MSE']:.4f}")
+    with col2:
+        st.metric("RMSE", f"{r['RMSE']:.4f}")
+    with col3:
+        st.metric("MAE", f"{r['MAE']:.4f}")
+
+    col4, col5 = st.columns(2)
+    with col4:
+        st.metric("SMAPE", f"{r['SMAPE']:.2f} %")
+    with col5:
+        st.metric("Accuracy", f"{r['Accuracy']:.1f} %")
+
+
+@lru_cache(maxsize=None)
+def _load_hcmc_raw_df():
+    """Đọc raw HCMC + tính cột DateTime từ date + period_x_y."""
+    if not HCMC_CSV_PATH.exists():
+        print(f"[HCMC] Không tìm thấy file {HCMC_CSV_PATH}")
+        return None
+
+    df = pd.read_csv(HCMC_CSV_PATH)
+
+    # Cần tối thiểu các cột này
+    if not {"date", "period", "street_name", "LOS"} <= set(df.columns):
+        print("[HCMC] Thiếu cột bắt buộc trong train.csv")
+        return None
+
+    df["date"] = pd.to_datetime(df["date"])
+    period_num = df["period"].str.extract(r"period_(\d+)_(\d+)", expand=True).astype(int)
+    df["hour"] = period_num[0]
+    df["minute"] = period_num[1]
+    df["DateTime"] = (
+        df["date"]
+        + pd.to_timedelta(df["hour"], unit="h")
+        + pd.to_timedelta(df["minute"], unit="m")
+    )
+    return df
+
+
+def _load_hcmc_series_for_route(route_id: str, routes_geo_all: pd.DataFrame):
+    """
+    Từ route_id (slug trong routes_geo) → tìm street_name gốc trong train.csv,
+    rồi build series nhị phân: 1 = tắc, 0 = không tắc. Index = DateTime.
+    """
+    df_geo = routes_geo_all[
+        (routes_geo_all["city"] == "HoChiMinh")
+        & (routes_geo_all["route_id"] == route_id)
+    ]
+    if df_geo.empty:
+        print(f"[HCMC] Không tìm thấy routes_geo cho route_id={route_id}")
+        return None
+
+    full_name = df_geo.iloc[0]["name"]             # VD: "Lý Thường Kiệt (HCMC)"
+    street_name = str(full_name).replace(" (HCMC)", "")  # "Lý Thường Kiệt"
+
+    df = _load_hcmc_raw_df()
+    if df is None:
+        return None
+
+    df_st = df[df["street_name"] == street_name].copy()
+    if df_st.empty:
+        print(f"[HCMC] Không có dữ liệu cho street_name='{street_name}'")
+        return None
+
+    def is_congested(group: pd.Series) -> int:
+        ratio_congested = (group.isin({"D", "E", "F"})).mean()
+        return int(ratio_congested >= 0.5)
+
+    s = (
+        df_st.groupby("DateTime")["LOS"]
+        .apply(is_congested)
+        .sort_index()
+        .astype(float)
+    )
+    print(f"[HCMC] '{street_name}': {len(s)} mốc thời gian (sau group)")
+    return s, full_name, street_name
+
+def estimate_travel_time_from_prob(
+    p_cong: float,
+    length_km: float,
+    v_free_kmh: float = HCMC_FREE_FLOW_SPEED_KMH,
+) -> tuple[float, float, str]:
+    """
+    Từ xác suất tắc đường p_cong (0–1), ước lượng:
+    - thời gian di chuyển để đi hết tuyến (phút)
+    - độ trễ so với điều kiện thoáng (phút)
+    - nhãn mức độ giảm tốc (low / medium / high)
+    """
+    p = float(max(0.0, min(1.0, p_cong)))
+
+    # Thời gian đi nếu đường thoáng
+    T_free = 60.0 * length_km / max(v_free_kmh, 1e-6)
+
+    # Map p -> hệ số giảm tốc (speed factor)
+    # p thấp => gần free-flow; p cao => chạy chậm
+    if p <= 0.3:
+        factor = 0.9   # gần như thoáng
+        level = "low"
+    elif p <= 0.7:
+        factor = 0.6   # hơi đông
+        level = "medium"
+    else:
+        factor = 0.3   # rất đông
+        level = "high"
+
+    v_eff = max(v_free_kmh * factor, 5.0)  # tránh chia cho tốc độ quá nhỏ
+    T_travel = 60.0 * length_km / v_eff
+    delay = T_travel - T_free
+    return T_travel, delay, level
+
+
+def make_travel_time_table_for_slots(df_slots: "pd.DataFrame", route_id: str) -> "pd.DataFrame":
+    """
+    Nhận vào DataFrame các slot dự báo 2 giờ tới và route_id,
+    trả về DataFrame mới với cột thời gian di chuyển & độ trễ.
+
+    ⚠ Giả sử df_slots có:
+        - cột 'SlotLabel' (hoặc 'TimeLabel'): label khung giờ (vd '16:30', '17:00')
+        - cột 'P_cong' (0–1): xác suất tắc đường trong khung đó
+
+    Nếu code hiện tại của bạn dùng tên khác, chỉ cần đổi lại cho đúng bên dưới.
+    """
+    import pandas as pd
+
+    length_km = get_hcmc_route_length_km(route_id)
+    v_free = HCMC_FREE_FLOW_SPEED_KMH
+    T_free = 60.0 * length_km / max(v_free, 1e-6)
+
+    rows = []
+    for _, r in df_slots.iterrows():
+        # 👉 ĐỔI tên cột ở đây nếu cần:
+        p_cong = float(r["P_cong"])  # ví dụ nếu cột là 'P_tac' thì sửa thành r["P_tac"]
+        slot_label = str(r["SlotLabel"])  # hoặc 'TimeLabel', tùy DataFrame hiện tại
+
+        T_travel, delay, level = estimate_travel_time_from_prob(p_cong, length_km, v_free)
+
+        rows.append(
+            {
+                "Khung giờ": slot_label,
+                "P tắc (%)": round(p_cong * 100.0, 1),
+                "Thời gian di chuyển (phút)": round(T_travel, 1),
+                "Độ trễ so với đường thoáng (phút)": round(delay, 1),
+                "Mức độ kẹt (low/medium/high)": level,
+            }
+        )
+
+    df_out = pd.DataFrame(rows)
+    # Sắp xếp theo thời gian nếu cần (giả sử SlotLabel ở dạng 'HH:MM')
+    try:
+        df_out = df_out.sort_values("Khung giờ")
+    except Exception:
+        pass
+
+    # Thêm T_free vào thuộc tính để hiển thị metric nhanh (dùng getattr bên ngoài)
+    df_out._T_free = T_free
+    df_out._length_km = length_km
+    return df_out
+
+@st.cache_resource
+def _load_hcmc_gru_model_for_route(route_id: str):
+    """
+    Load model GRU congestion cho 1 tuyến HCMC.
+    Giả định file: model/hcmc/gru_congestion_<route_id>.keras
+    """
+    from tensorflow.keras.models import load_model
+    model_path = Path("model") / "hcmc" / f"gru_congestion_{route_id}.keras"
+    if not model_path.exists():
+        raise FileNotFoundError(f"[HCMC] Không tìm thấy model: {model_path}")
+    print(f"[HCMC] Load model {model_path}")
+    model = load_model(model_path)
+    return model
+
+
+def forecast_hcmc_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
+    """
+    Dùng GRU congestion để dự báo Mức độ kẹt xe cho 4 bước tiếp theo (2h tới).
+    Trả về (df_fc, full_name) hoặc None.
+    """
+    out = _load_hcmc_series_for_route(route_id, routes_geo_all)
+    if out is None:
+        return None
+    s, full_name, street_name = out
+
+    if len(s) <= HCMC_LOOKBACK:
+        print(
+            f"[HCMC] Quá ít time step ({len(s)}) cho route_id={route_id}, "
+            f"LOOKBACK={HCMC_LOOKBACK}"
+        )
+        return None
+
+    times = list(s.index)
+    y_vals = list(s.values.astype(float))
+
+    model = _load_hcmc_gru_model_for_route(route_id)
+
+    preds = []
+
+    for _ in range(HCMC_FC_STEPS):
+        window_times = pd.DatetimeIndex(times[-HCMC_LOOKBACK:])
+        window_y = np.array(y_vals[-HCMC_LOOKBACK:], dtype=float)
+
+        total_minutes = window_times.hour * 60 + window_times.minute
+        sin_t = np.sin(2 * np.pi * total_minutes / (24 * 60))
+        cos_t = np.cos(2 * np.pi * total_minutes / (24 * 60))
+
+        weekday = window_times.weekday
+        sin_w = np.sin(2 * np.pi * weekday / 7.0)
+        cos_w = np.cos(2 * np.pi * weekday / 7.0)
+
+        F_window = np.stack([window_y, sin_t, cos_t, sin_w, cos_w], axis=1)
+        X = F_window[np.newaxis, :, :]
+
+        p = float(model.predict(X, verbose=0).ravel()[0])
+
+        # cập nhật history bên trong "thế giới data"
+        last_time = times[-1]
+        new_time = last_time + pd.Timedelta(minutes=HCMC_STEP_MINUTES)
+        times.append(new_time)
+        y_vals.append(1.0 if p >= 0.5 else 0.0)
+
+        preds.append(p)
+
+    # --- Phần này là MỚI: build trục thời gian theo "bây giờ" ---
+    now = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh")
+
+    # làm tròn về slot gần nhất: 00 hoặc 30 phút
+    minute_bin = 0 if now.minute < 30 else 30
+    current_slot = now.replace(minute=minute_bin, second=0, microsecond=0)
+
+    display_times = [
+        current_slot + pd.Timedelta(minutes=HCMC_STEP_MINUTES * (i + 1))
+        for i in range(len(preds))
+    ]
+
+    df_fc = pd.DataFrame(
+        {
+            "DateTime": display_times,
+            "ProbCongested": preds,
+        }
+    )
+    return df_fc, full_name
+
+    return df_fc, full_name
+
+
+def render_hcmc_congestion_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
+    """
+    UI cho HCMC: biểu đồ + bảng ngang Mức độ kẹt xe 2h tới cho tuyến đang chọn,
+    + ước lượng thời gian di chuyển theo từng khung 30 phút.
+    """
+    out = forecast_hcmc_next_2h(route_id, routes_geo_all)
+    if out is None:
+        st.info("Không đủ dữ liệu để dự báo tắc đường cho tuyến HCMC này.")
+        return
+
+    df_fc, full_name = out
+
+    st.subheader(f"🚦 Dự báo nguy cơ tắc đường trong 2 giờ tới – {full_name}")
+
+    df_fc = df_fc.copy()
+    df_fc["DateTime"] = pd.to_datetime(df_fc["DateTime"], errors="coerce")
+    df_fc = df_fc.dropna(subset=["DateTime"])
+    df_fc["TimeLabel"] = df_fc["DateTime"].dt.strftime("%H:%M")
+
+    def level_from_p(p: float) -> str:
+        if p >= 0.7:
+            return "high"
+        elif p >= 0.4:
+            return "medium"
+        return "low"
+
+    df_fc["Level"] = df_fc["ProbCongested"].apply(level_from_p)
+
+    # ======== TÓM TẮT NHANH 2 GIỜ TỚI ========
+    probs = df_fc["ProbCongested"].clip(0.0, 1.0).values
+    expected_congested_minutes = HCMC_STEP_MINUTES * float(np.sum(probs))
+    avg_prob = float(np.mean(probs))
+
+    avoid_slots = df_fc[df_fc["ProbCongested"] >= 0.7]["TimeLabel"].tolist()
+    good_slots = df_fc[df_fc["ProbCongested"] <= 0.3]["TimeLabel"].tolist()
+
+    st.markdown("### Tóm tắt nhanh 2 giờ tới")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric(
+            "Thời gian kỳ vọng có nguy cơ tắc",
+            f"{expected_congested_minutes:,.0f} phút",
+            help="Tổng Mức độ kẹt xe của 4 khung × 30 phút",
+        )
+    with col2:
+        st.metric(
+            "Số khung 30' nguy cơ cao",
+            f"{len(avoid_slots)} / {len(df_fc)}",
+            help="Mức độ kẹt xe ≥ 0.7 được coi là nguy cơ cao",
+        )
+    with col3:
+        st.metric(
+            "Mức độ kẹt xe trung bình (2h tới)",
+            f"{avg_prob*100:,.1f} %",
+        )
+
+    summary_lines = []
+    if avoid_slots:
+        summary_lines.append(
+            "• **Khung nên tránh** (Mức độ kẹt xe ≥ 0.7): " + ", ".join(avoid_slots)
+        )
+    else:
+        summary_lines.append(
+            "• Không có khung giờ nào Mức độ kẹt xe ≥ 0.7 trong 2 giờ tới."
+        )
+
+    if good_slots:
+        summary_lines.append(
+            "• **Khung nên đi** (Mức độ kẹt xe ≤ 0.3): " + ", ".join(good_slots)
+        )
+    else:
+        summary_lines.append(
+            "• Không có khung giờ nào thực sự rất thoáng (Mức độ kẹt xe ≤ 0.3) trong 2 giờ tới."
+        )
+
+    st.markdown("<br>".join(summary_lines), unsafe_allow_html=True)
+
+    # ======== BIỂU ĐỒ P(TẮC) 2H TỚI ========
+    p_min = float(df_fc["ProbCongested"].min())
+    p_max = float(df_fc["ProbCongested"].max())
+    span = max(1e-3, p_max - p_min)
+    pad = max(0.02, span * 0.3)
+
+    y_low = max(0.0, p_min - pad)
+    y_high = min(1.0, p_max + pad)
+
+    base = alt.Chart(df_fc).encode(
+        x=alt.X("DateTime:T", title="Thời gian (30' tiếp theo)"),
+    )
+
+    tooltip = [
+        alt.Tooltip("DateTime:T", title="Thời gian"),
+        alt.Tooltip("ProbCongested:Q", title="Mức độ kẹt xe", format=".2f"),
+        alt.Tooltip("Level:N", title="Mức độ"),
+    ]
+
+    color_scale = alt.Scale(
+        domain=["low", "medium", "high"],
+        range=["seagreen", "orange", "red"],
+    )
+
+    area = base.mark_area(opacity=0.25).encode(
+        y=alt.Y(
+            "ProbCongested:Q",
+            title="Mức độ kẹt xe",
+            scale=alt.Scale(domain=[y_low, y_high]),
+        ),
+        color=alt.value("#eeeeee"),
+    )
+
+    line = base.mark_line().encode(
+        y=alt.Y(
+            "ProbCongested:Q",
+            title="Mức độ kẹt xe",
+            scale=alt.Scale(domain=[y_low, y_high]),
+        ),
+        tooltip=tooltip,
+    )
+
+    points = base.mark_point(size=80).encode(
+        y="ProbCongested:Q",
+        color=alt.Color(
+            "Level:N",
+            title="Mức độ tắc",
+            scale=color_scale,
+            legend=alt.Legend(
+                title="Mức độ tắc",
+                orient="top",
+            ),
+        ),
+        tooltip=tooltip,
+    )
+
+    chart = (area + line + points).properties(
+        height=260,
+        title="Dự báo xác suất tắc trong 2 giờ tới",
+    ).interactive()
+
+    st.altair_chart(chart, use_container_width=True)
+
+    # =========================
+    # ⏱ Ước lượng thời gian di chuyển trong 2 giờ tới
+    # =========================
+
+    # Chuẩn hóa df_slots cho hàm make_travel_time_table_for_slots
+    df_slots = df_fc[["TimeLabel", "ProbCongested"]].copy()
+    df_slots.rename(
+        columns={
+            "TimeLabel": "SlotLabel",
+            "ProbCongested": "P_cong",
+        },
+        inplace=True,
+    )
+
+    try:
+        df_tt = make_travel_time_table_for_slots(df_slots, route_id)
+    except Exception as ex:
+        st.warning(
+            "Không tính được thời gian di chuyển "
+            "(kiểm tra lại make_travel_time_table_for_slots / tên cột). "
+            f"Chi tiết: {ex}"
+        )
+        # vẫn tiếp tục hiển thị bảng ngang mức độ kẹt xe
+        df_tt = None
+
+    if df_tt is not None:
+        T_free = getattr(df_tt, "_T_free", None)
+        length_km = getattr(df_tt, "_length_km", None)
+
+        st.markdown("### ⏱ Ước lượng thời gian di chuyển trong 2 giờ tới")
+
+        avg_travel = float(df_tt["Thời gian di chuyển (phút)"].mean())
+        worst_travel = float(df_tt["Thời gian di chuyển (phút)"].max())
+        worst_slot = df_tt.loc[
+            df_tt["Thời gian di chuyển (phút)"].idxmax(), "Khung giờ"
+        ]
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric(
+                "Thời gian trong điều kiện thoáng",
+                f"{T_free:,.1f} phút" if T_free is not None else "-",
+                help=(
+                    f"Ước tính với chiều dài tuyến ~{length_km:.1f} km, "
+                    f"tốc độ thoáng ~{HCMC_FREE_FLOW_SPEED_KMH:.0f} km/h."
+                    if (T_free is not None and length_km is not None)
+                    else None
+                ),
+            )
+        with col2:
+            st.metric(
+                "Thời gian di chuyển trung bình (4 khung)",
+                f"{avg_travel:,.1f} phút",
+            )
+        with col3:
+            st.metric(
+                "Tệ nhất trong 2 giờ tới",
+                f"{worst_travel:,.1f} phút",
+                help=f"Khung giờ dự kiến tốn thời gian nhất: {worst_slot}.",
+            )
+
+        st.markdown("#### Bảng chi tiết theo từng khung 30 phút")
+        st.dataframe(df_tt, use_container_width=True)
+
+    # ==== Bảng ngang Mức độ kẹt xe theo từng khung 30' ====
+    prob_pct = (df_fc.set_index("TimeLabel")["ProbCongested"] * 100).round(1)
+    tbl = prob_pct.to_frame().T
+    tbl.index = ["Mức độ kẹt xe (%)"]
+
+    styled_tbl = (
+        tbl.style
+        .format("{:,.1f}", na_rep="-")
+        .background_gradient(axis=1, cmap="RdYlGn_r")
+        .highlight_max(axis=1, color="#8B0000")
+    )
+
+    st.dataframe(styled_tbl, use_container_width=True, height=80)
+
+    st.markdown(
+        """
+        <div style="font-size:0.9rem; margin-top:4px;">
+          <b>Chú thích màu:</b>
+          <span style="display:inline-block;width:14px;height:14px;background-color:#006400;border-radius:3px;margin:0 4px 0 8px;border:1px solid #ccc;"></span>
+          Xanh = nguy cơ tắc thấp
+          <span style="display:inline-block;width:14px;height:14px;background-color:#FFD700;border-radius:3px;margin:0 4px 0 12px;border:1px solid #ccc;"></span>
+          Vàng = trung bình
+          <span style="display:inline-block;width:14px;height:14px;background-color:#8B0000;border-radius:3px;margin:0 4px 0 12px;border:1px solid #ccc;"></span>
+          Đỏ = nguy cơ tắc cao
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_hcmc_departure_advisor(route_id: str, routes_geo_all: pd.DataFrame):
+    """
+    Trợ lý chọn giờ đi đường cho HCMC:
+    - Dựa trên lịch sử train.csv
+    - Gợi ý khung giờ nên đi / nên tránh trong ngày hôm nay
+      cho tuyến đã chọn.
+    """
+    out = _load_hcmc_series_for_route(route_id, routes_geo_all)
+    if out is None:
+        st.info("Không đủ dữ liệu lịch sử để tư vấn giờ đi cho tuyến này.")
+        return
+
+    s, full_name, street_name = out
+
+    # Chuẩn bị DataFrame lịch sử: mỗi mốc thời gian = 0/1 (kẹt / không)
+    df_hist = s.to_frame(name="is_congested")
+    df_hist["DateTime"] = df_hist.index
+    df_hist["hour"] = df_hist["DateTime"].dt.hour
+    df_hist["minute"] = df_hist["DateTime"].dt.minute
+    df_hist["weekday"] = df_hist["DateTime"].dt.weekday
+
+    st.subheader("🧭 Trợ lý chọn giờ đi đường")
+
+    st.markdown(
+        f"Dựa trên dữ liệu lịch sử của tuyến **{full_name}**, "
+        "gợi ý khung giờ nên đi / nên tránh cho **ngày hôm nay**."
+    )
+
+    now = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh")
+    today_wd = now.weekday()
+
+    # Chọn khung giờ quan tâm
+    window_label = st.selectbox(
+        "Chọn khung giờ bạn quan tâm",
+        ["Sáng (06:00–09:00)", "Chiều (16:00–19:00)"],
+        key="hcmc_advisor_window",
+    )
+
+    if window_label.startswith("Sáng"):
+        start_hour, end_hour = 6, 9
+    else:
+        start_hour, end_hour = 16, 19
+
+    # Tạo list slot 30' trong khoảng [start_hour, end_hour)
+    slots = []
+    h = start_hour
+    m = 0
+    while h < end_hour:
+        slots.append((h, m))
+        if m == 0:
+            m = 30
+        else:
+            m = 0
+            h += 1
+
+    rows = []
+    for (h, m) in slots:
+        subset = df_hist[(df_hist["hour"] == h) & (df_hist["minute"] == m)]
+        if subset.empty:
+            mean_cong = np.nan
+        else:
+            # Ưu tiên dùng đúng thứ trong tuần hôm nay, nếu đủ mẫu
+            subset_today = subset[subset["weekday"] == today_wd]
+            if len(subset_today) >= 5:
+                mean_cong = subset_today["is_congested"].mean()
+            else:
+                mean_cong = subset["is_congested"].mean()
+        rows.append({"hour": h, "minute": m, "MeanCongestion": mean_cong})
+
+    df_window = pd.DataFrame(rows).dropna(subset=["MeanCongestion"])
+    if df_window.empty:
+        st.info(
+            "Không đủ dữ liệu lịch sử để tư vấn khung giờ cho tuyến này trong khoảng đã chọn."
+        )
+        return
+
+    df_window["TimeLabel"] = df_window.apply(
+        lambda r: f"{int(r['hour']):02d}:{int(r['minute']):02d}", axis=1
+    )
+    df_window["CongestionPct"] = (df_window["MeanCongestion"] * 100.0).round(1)
+
+    # ====== Tìm khung nên đi / nên tránh theo ngưỡng phần trăm ======
+    avg_pct = float(df_window["CongestionPct"].mean())
+
+    GOOD_THR = 30.0  # <= 30%: nên đi
+    BAD_THR = 70.0   # >= 70%: nên tránh
+
+    good = df_window[df_window["CongestionPct"] <= GOOD_THR]
+    bad = df_window[df_window["CongestionPct"] >= BAD_THR]
+
+    # Khung nên đi: ưu tiên tất cả khung "good"; nếu không có thì lấy 1–2 khung nhỏ nhất
+    if not good.empty:
+        best_list = (
+            good.sort_values("CongestionPct")[["TimeLabel"]]
+            .drop_duplicates()
+            .iloc[:, 0]
+            .tolist()
+        )
+    else:
+        best_list = (
+            df_window.nsmallest(2, "CongestionPct")[["TimeLabel"]]
+            .iloc[:, 0]
+            .tolist()
+        )
+
+    # Khung nên tránh: ưu tiên tất cả khung "bad"; nếu không có và có kẹt >0% thì lấy 1–2 khung lớn nhất
+    if not bad.empty:
+        worst_list = (
+            bad.sort_values("CongestionPct", ascending=False)[["TimeLabel"]]
+            .drop_duplicates()
+            .iloc[:, 0]
+            .tolist()
+        )
+    else:
+        if df_window["CongestionPct"].max() > 0:
+            worst_list = (
+                df_window.nlargest(2, "CongestionPct")[["TimeLabel"]]
+                .iloc[:, 0]
+                .tolist()
+            )
+        else:
+            worst_list = []
+
+    best_str = ", ".join(best_list)
+    worst_str = ", ".join(worst_list)
+
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric(
+            "Khung nên đi (ít kẹt nhất)",
+            best_str or "-",
+        )
+    with col2:
+        st.metric(
+            "Khung nên tránh (kẹt nhất)",
+            worst_str or "-",
+        )
+    with col3:
+        st.metric(
+            "Mức độ kẹt xe trung bình",
+            f"{avg_pct:,.1f} %",
+        )
+
+    # st.markdown(
+    #     f"- **Khung nên đi**: {best_str if best_str else 'chưa rõ do thiếu dữ liệu'}  \n"
+    #     f"- **Khung nên tránh**: {worst_str if worst_str else 'chưa rõ do thiếu dữ liệu'}"
+    # )
+
+    # Biểu đồ cột mức độ kẹt theo từng slot
+    chart = (
+        alt.Chart(df_window)
+        .mark_bar()
+        .encode(
+            x=alt.X("TimeLabel:N", title="Khung giờ (30 phút)"),
+            y=alt.Y(
+                "CongestionPct:Q",
+                title="Mức độ kẹt xe trung bình (%)",
+            ),
+            color=alt.Color(
+                "CongestionPct:Q",
+                scale=alt.Scale(scheme="RdYlGn_r"),  # thấp = xanh, cao = đỏ
+                legend=alt.Legend(title="Kẹt xe (%)"),
+            ),
+            tooltip=[
+                alt.Tooltip("TimeLabel:N", title="Khung giờ"),
+                alt.Tooltip(
+                    "CongestionPct:Q",
+                    title="Mức độ kẹt xe (%)",
+                    format=".1f",
+                ),
+            ],
+        )
+        .properties(height=260, title="Mức độ kẹt xe trung bình theo khung 30 phút")
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
+def render_hcmc_weekly_pattern(route_id: str, routes_geo_all: pd.DataFrame):
+    """
+    Hiển thị 'heatmap' mẫu hình kẹt xe theo giờ & thứ trong tuần
+    cho một tuyến HCMC, dạng bảng màu (pandas.style).
+    """
+    out = _load_hcmc_series_for_route(route_id, routes_geo_all)
+    if out is None:
+        st.info("Không đủ dữ liệu lịch sử để hiển thị mẫu hình tuần cho tuyến này.")
+        return
+
+    s, full_name, street_name = out
+
+    df = s.to_frame(name="is_congested")
+    if df.empty:
+        st.info("Không đủ dữ liệu lịch sử để hiển thị mẫu hình tuần cho tuyến này.")
+        return
+
+    df["DateTime"] = df.index
+    df["hour"] = df["DateTime"].dt.hour
+    df["weekday"] = df["DateTime"].dt.weekday  # 0=Mon ... 6=Sun
+
+    weekday_map = {
+        0: "Thứ 2",
+        1: "Thứ 3",
+        2: "Thứ 4",
+        3: "Thứ 5",
+        4: "Thứ 6",
+        5: "Thứ 7",
+        6: "Chủ nhật",
+    }
+    df["weekday_label"] = df["weekday"].map(weekday_map)
+
+    # Nhóm theo (weekday_label, hour) để lấy tỉ lệ kẹt trung bình
+    grp = (
+        df.groupby(["weekday_label", "hour"], as_index=False)["is_congested"]
+        .mean()
+    )
+    if grp.empty:
+        st.info("Không đủ dữ liệu lịch sử để hiển thị mẫu hình tuần cho tuyến này.")
+        return
+
+    grp["CongestionPct"] = (grp["is_congested"] * 100.0).round(1)
+    grp["HourStr"] = grp["hour"].astype(int).astype(str).str.zfill(2) + ":00"
+
+    st.subheader("📅 Mẫu hình kẹt xe trong tuần theo giờ")
+    st.markdown(
+        "Màu càng đỏ = tuyến càng thường xuyên kẹt tại khung giờ đó "
+        "(tính theo lịch sử trong tập dữ liệu HCMC)."
+    )
+
+    # Pivot thành bảng 7 x 24 (thứ x giờ)
+    pivot = grp.pivot_table(
+        index="weekday_label",
+        columns="HourStr",
+        values="CongestionPct",
+        aggfunc="mean",
+    )
+
+    # Sắp xếp thứ theo đúng thứ tự
+    order_idx = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"]
+    pivot = pivot.reindex(order_idx)
+
+    # Sắp xếp giờ theo thứ tự thời gian
+    pivot = pivot.reindex(sorted(pivot.columns), axis=1)
+
+    # Đảm bảo giá trị là float (NaN chuẩn)
+    pivot_float = pivot.astype("float")
+
+    # Hàm style riêng cho ô không có dữ liệu
+    def style_na(v):
+        if pd.isna(v):
+            # nền trắng, chữ xám nhạt (có thể đổi 'No data' tùy thích)
+            return "background-color: #ffffff; color: #999999;"
+        return ""
+
+    styled = (
+        pivot_float.style
+        # tô heatmap cho các ô có số
+        .background_gradient(cmap="RdYlGn_r", axis=None)
+        # format số, ô NaN thì để trống hoặc ghi 'None' tùy bạn
+        .format("{:.1f}", na_rep="None")   # hoặc na_rep="" nếu muốn ô trống
+        # override lại style cho ô NaN (đặt sau background_gradient để đè màu)
+        .applymap(style_na)
+    )
+
+    st.dataframe(styled, use_container_width=True)
+
 
 # ======================================================
 # MAIN APP
@@ -332,15 +1204,6 @@ def main():
 
     st.set_page_config(page_title="Traffic Forecast App", layout="wide")
     st.title("🚦 Traffic Forecast App ")
-
-    # --------------------------------------------------
-    # Apply pending selection từ map (trước khi tạo widget)
-    # if "pending_city" in st.session_state:
-    #     st.session_state["city"] = st.session_state.pop("pending_city")
-    # if "pending_zone" in st.session_state:
-    #     st.session_state["zone"] = st.session_state.pop("pending_zone")
-    # if "pending_route" in st.session_state:
-    #     st.session_state["route_id"] = st.session_state.pop("pending_route")
 
     # Apply pending selection từ map (trước khi tạo widget)
     if "pending_city" in st.session_state:
@@ -357,6 +1220,8 @@ def main():
 
     # ----- CITY -----
     cities = list_cities()
+    if "HoChiMinh" not in cities: #TODO :  enhance this later
+        cities.append("HoChiMinh")
     if not cities:
         st.error("Không tìm thấy city nào trong data/processed_ds.")
         return
@@ -378,39 +1243,51 @@ def main():
 
     # ----- ZONE -----
     if not has_city:
-        # Chưa chọn city → disable zone
-        zone = st.sidebar.selectbox(
+        # Chưa chọn city → disable zone, dùng key khác (không phải "zone")
+        st.sidebar.selectbox(
             "Zone",
             ["(Chọn city trước)"],
-            key="zone",
+            key="zone_placeholder",
             disabled=True,
         )
+        zone = None
         current_zone = None
     else:
         zones = list_zones(current_city)
 
-        # Nếu có nhiều zone:
-        #  - đưa "(All)" lên đầu
-        #  - nếu chưa có "(All)" mà >1 zone → thêm "(All)" vào đầu
-        if "(All)" in zones:
-            zones = ["(All)"] + [z for z in zones if z != "(All)"]
-        elif len(zones) > 1:
-            zones = ["(All)"] + zones
+        # Trường hợp city không có zone (ví dụ HoChiMinh)
+        if not zones:
+            st.sidebar.selectbox(
+                "Zone",
+                ["(Không có zone – dùng toàn city)"],
+                key="zone_info",
+                disabled=True,
+            )
+            zone = None
+            current_zone = None
+        else:
+            # Nếu có nhiều zone:
+            #  - đưa "(All)" lên đầu
+            #  - nếu chưa có "(All)" mà >1 zone → thêm "(All)" vào đầu
+            if "(All)" in zones:
+                zones = ["(All)"] + [z for z in zones if z != "(All)"]
+            elif len(zones) > 1:
+                zones = ["(All)"] + zones
 
-        # Default zone:
-        #   - Nếu có "(All)" → chọn "(All)"
-        #   - Nếu chỉ có 1 zone → chọn đúng zone đó
-        if "zone" not in st.session_state or st.session_state["zone"] not in zones:
-            default_zone = "(All)" if "(All)" in zones else zones[0]
-            st.session_state["zone"] = default_zone
+            # Default zone:
+            #   - Nếu có "(All)" → chọn "(All)"
+            #   - Nếu chỉ có 1 zone → chọn đúng zone đó
+            if "zone" not in st.session_state or st.session_state["zone"] not in zones:
+                default_zone = "(All)" if "(All)" in zones else zones[0]
+                st.session_state["zone"] = default_zone
 
-        zone = st.sidebar.selectbox(
-            "Zone",
-            zones,
-            key="zone",
-            disabled=False,
-        )
-        current_zone = zone
+            zone = st.sidebar.selectbox(
+                "Zone",
+                zones,
+                key="zone",        # CHỈ dùng key="zone" ở đây
+                disabled=False,
+            )
+            current_zone = zone
     # alias cho phần còn lại của code
     city = current_city
     zone = current_zone
@@ -430,45 +1307,64 @@ def main():
     HORIZON = None
 
     if has_city:
+        ctx = None
         zone_for_model = None if zone == "(All)" else zone
 
-        try:
-            ctx = get_model_context(city, zone_for_model)
-        except FileNotFoundError as e:
-            if zone == "(All)":
-                zones_all = list_zones(city)
-                ctx = None
-                for z in zones_all:
-                    if z == "(All)":
-                        continue
-                    try:
-                        ctx = load_model_context(city, z)
-                        zone_for_model = z
-                        break
-                    except FileNotFoundError:
-                        continue
+        # HoChiMinh: KHÔNG dùng ModelManager seq2seq (I94/Fremont),
+        # mà dùng pipeline riêng GRU congestion → bỏ qua
+        if city != "HoChiMinh":
+            try:
+                ctx = get_model_context(city, zone_for_model)
+            except FileNotFoundError as e:
+                if zone == "(All)":
+                    zones_all = list_zones(city)
+                    ctx = None
+                    for z in zones_all:
+                        if z == "(All)":
+                            continue
+                        try:
+                            ctx = load_model_context(city, z)
+                            zone_for_model = z
+                            break
+                        except FileNotFoundError:
+                            continue
 
-                if ctx is None:
+                    if ctx is None:
+                        st.error(str(e))
+                        return
+                    else:
+                        st.info(
+                            f"Không có model tổng cho city={city}, zone='(All)'. "
+                            f"Đang dùng model của zone='{zone_for_model}'."
+                        )
+                else:
                     st.error(str(e))
                     return
-                else:
-                    st.info(
-                        f"Không có model tổng cho city={city}, zone='(All)'. "
-                        f"Đang dùng model của zone='{zone_for_model}'."
-                    )
-            else:
-                st.error(str(e))
-                return
+        else:
+            # HoChiMinh không có ctx seq2seq
+            zone_for_model = None
+            ctx = None
 
-        # Tách context khi đã load được ctx
-        MODEL_GRU = ctx.gru_model
-        MODEL_RNN = getattr(ctx, "rnn_model", None)
-        META = ctx.meta
-        SCALER = ctx.scaler
-        ROUTES_MODEL = ctx.routes_model
-        RID2IDX = ctx.rid2idx
-        LOOKBACK = ctx.lookback
-        HORIZON = ctx.horizon
+        # Tách context khi đã load được ctx (chỉ áp dụng cho Minneapolis / Seattle)
+        if ctx is not None:
+            MODEL_GRU = ctx.gru_model
+            MODEL_RNN = getattr(ctx, "rnn_model", None)
+            META = ctx.meta
+            SCALER = ctx.scaler
+            ROUTES_MODEL = ctx.routes_model
+            RID2IDX = ctx.rid2idx
+            LOOKBACK = ctx.lookback
+            HORIZON = ctx.horizon
+        else:
+            MODEL_GRU = None
+            MODEL_RNN = None
+            META = None
+            SCALER = None
+            ROUTES_MODEL = None
+            RID2IDX = None
+            LOOKBACK = None
+            HORIZON = None
+
 
     # ====================================
     # 3) ROUTE (sidebar)
@@ -488,29 +1384,69 @@ def main():
         )
         route_id = None
     else:
-        raw_routes = list_routes(city, None if zone == "(All)" else zone)
-        if not raw_routes:
-            st.error("⚠️ Không tìm thấy RouteId nào trong parquet cho city/zone này.")
-            return
+        if city == "HoChiMinh":
+            # HCMC: lấy route từ routes_geo, hiển thị name, value = route_id
+            routes_geo_all_sidebar = load_routes_geo().fillna("")
+            df_geo_city_sb = routes_geo_all_sidebar[
+                routes_geo_all_sidebar["city"] == "HoChiMinh"
+            ].copy()
 
-        route_options = [ROUTE_PLACEHOLDER] + raw_routes
+            if df_geo_city_sb.empty:
+                st.error("Không tìm thấy tuyến HCMC nào trong routes_geo.")
+                route_selected = ROUTE_PLACEHOLDER
+                route_id = None
+            else:
+                route_ids = df_geo_city_sb["route_id"].astype(str).tolist()
+                id2name = {
+                    r["route_id"]: r["name"]
+                    for _, r in df_geo_city_sb.iterrows()
+                }
 
-        if "route" not in st.session_state:
-            st.session_state["route"] = ROUTE_PLACEHOLDER
-        elif (
+                options = [ROUTE_PLACEHOLDER] + route_ids
+
+                if "route" not in st.session_state:
+                    st.session_state["route"] = ROUTE_PLACEHOLDER
+                elif (
+                    st.session_state["route"] != ROUTE_PLACEHOLDER
+                    and st.session_state["route"] not in route_ids
+                ):
+                    st.session_state["route"] = ROUTE_PLACEHOLDER
+
+                route_selected = st.sidebar.selectbox(
+                    "Route",
+                    options,
+                    key="route",
+                    format_func=lambda rid: (
+                        id2name.get(rid, rid)
+                        if rid != ROUTE_PLACEHOLDER
+                        else ROUTE_PLACEHOLDER
+                    ),
+                )
+                route_id = None if route_selected == ROUTE_PLACEHOLDER else route_selected
+        else:
+            # City khác (Minneapolis, Seattle, ...) dùng route từ parquet như cũ
+            raw_routes = list_routes(city, None if zone == "(All)" else zone)
+            if not raw_routes:
+                st.error("⚠️ Không tìm thấy RouteId nào trong parquet cho city/zone này.")
+                return
+
+            route_options = [ROUTE_PLACEHOLDER] + raw_routes
+
+            if "route" not in st.session_state:
+                st.session_state["route"] = ROUTE_PLACEHOLDER
+            elif (
                 st.session_state["route"] != ROUTE_PLACEHOLDER
                 and st.session_state["route"] not in raw_routes
-        ):
-            st.session_state["route"] = ROUTE_PLACEHOLDER
+            ):
+                st.session_state["route"] = ROUTE_PLACEHOLDER
 
-        route_selected = st.sidebar.selectbox(
-            "Route",
-            route_options,
-            key="route",
-            disabled=False,
-        )
-
-        route_id = None if route_selected == ROUTE_PLACEHOLDER else route_selected
+            route_selected = st.sidebar.selectbox(
+                "Route",
+                route_options,
+                key="route",
+                disabled=False,
+            )
+            route_id = None if route_selected == ROUTE_PLACEHOLDER else route_selected
 
     # ====================================
     # 4) TOP-2 MODELS (cho ensemble forecast)
@@ -576,13 +1512,37 @@ def main():
 
             st.rerun()
     if route_id:
-        st.write(f"**Đang chọn tuyến:** {route_id}")
+        display_name = route_id
+        if city == "HoChiMinh":
+            row_dn = routes_geo_all[
+                (routes_geo_all["city"] == "HoChiMinh")
+                & (routes_geo_all["route_id"] == route_id)
+            ]
+            if not row_dn.empty:
+                display_name = row_dn.iloc[0]["name"]
+        st.write(f"**Đang chọn tuyến:** {display_name}")
     else:
         st.write("**Chưa chọn tuyến nào**")
 
+
     # nếu chưa có route thì chỉ show map, không load data/model
     if not route_id:
-        st.info(" Hãy chọn một tuyến ở sidebar hoặc click vào marker trên bản đồ để xem forecast chi tiết.")
+        st.info("👆 Hãy chọn một tuyến ở sidebar hoặc click vào marker trên bản đồ để xem forecast chi tiết.")
+        return
+
+    # HCMC: dùng GRU congestion riêng, không dùng pipeline Vehicles/h như I-94/Fremont
+    if city == "HoChiMinh":
+        # 1) Dự báo 2 giờ tới cho tuyến đang chọn
+        render_hcmc_congestion_next_2h(route_id, routes_geo_all)
+
+        st.markdown("---")
+
+        # 2) Trợ lý chọn giờ đi đường (dựa trên lịch sử)
+        render_hcmc_departure_advisor(route_id, routes_geo_all)
+        # 3) Heatmap mẫu hình cả tuần
+        render_hcmc_weekly_pattern(route_id, routes_geo_all)
+        st.markdown("---")
+        render_hcmc_eval_summary_for_route(route_id)
         return
 
     # ====================================
@@ -597,7 +1557,7 @@ def main():
     )
 
     if df_full.empty:
-        st.error("⚠️ Không đọc được dữ liệu history cho route này.")
+        # st.error("⚠️ Không đọc được dữ liệu history cho route này.")
         return
 
     df_full = df_full.copy()
