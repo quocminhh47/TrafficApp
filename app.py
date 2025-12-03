@@ -536,7 +536,7 @@ def main():
         pass
 
     # ----- OPTIONS -----
-    tab = st.sidebar.radio("Options", ["FORECAST", "DAILY TRAFFIC"])
+    tab = st.sidebar.radio("Options", ["FORECAST", "METRICS AND EVALUATION"])
 
     # ====================================
     # 5) MAP COMPONENT
@@ -895,8 +895,8 @@ def main():
     # 8) DAILY TRAFFIC – 3 THÁNG GẦN NHẤT
     #     Actual vs GRU / RNN / LSTM / ARIMA / SARIMA + Metrics tổng 3 tháng
     # ====================================
-    elif tab == "DAILY TRAFFIC":
-        st.header("📚 Daily traffic – 3 tháng gần nhất (Actual vs Predicted by models)")
+    elif tab == "METRICS AND EVALUATION":
+        st.header("📚 Thống kê và đánh giá")
 
         # Đọc cache do script precompute_daily_3months.py sinh ra:
         #   model/<family_name>/<route_id>_daily_3months.parquet
@@ -1080,7 +1080,7 @@ def main():
                     df_show = df_eval.copy()
                     for c in df_show.columns:
                         if c.startswith("Daily"):
-                            df_show[c] = df_show[c].round().astype("Int64")
+                            df_show[c] = df_show[c].round().astype("Int64").apply(lambda x: f"{x:,.0f}")
                     st.dataframe(df_show.sort_values("Date"), use_container_width=True)
             else:
                 st.info("Không có series nào (GRU/RNN/LSTM/ARIMA/SARIMA) để hiển thị.")
@@ -1141,7 +1141,16 @@ def main():
                     df_metrics[c] = df_metrics[c].round(2)
                 for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
                     df_metrics[c] = df_metrics[c].round(3)
-                st.dataframe(df_metrics, use_container_width=True)
+
+                # ---- Format số theo dạng 000,000,000.00 ----
+                format_cols = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
+                df_formatted = df_metrics.copy()
+                for c in ["MSE", "RMSE", "MAE"]:
+                    df_formatted[c] = df_formatted[c].apply(lambda x: f"{x:,.2f}")
+                for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
+                    df_formatted[c] = df_formatted[c].apply(lambda x: f"{x:,.3f}")
+
+                st.dataframe(df_formatted, use_container_width=True)
 
             # ==== Biểu đồ cột cho từng đánh giá ====
             st.subheader("📊 Biểu đồ cột cho từng đánh giá sai số")
@@ -1181,7 +1190,7 @@ def main():
         # -----------------
         with tab_cmp_weekly:
 
-            df_weekly = df_show.copy()
+            df_weekly = df_eval.copy()
             df_weekly["Date"] = pd.to_datetime(df_weekly["Date"])
 
             # Convert thành tuần
@@ -1251,9 +1260,13 @@ def main():
                 st.altair_chart(chart_weekly, use_container_width=True)
 
                 with st.expander("Xem bảng Weekly (Actual + Models) – tổng hợp theo tuần"):
+                    df_weekly_show = df_weekly.copy()
+                    for c in df_weekly_show.columns:
+                        if c.startswith("Weekly"):
+                            df_weekly_show[c] = df_weekly_show[c].round().astype("Int64").apply(lambda x: f"{x:,.0f}")
                     st.dataframe(
-                        df_weekly[["WeekRange"] +
-                                  [c for c in df_weekly.columns if
+                        df_weekly_show[["WeekRange"] +
+                                  [c for c in df_weekly_show.columns if
                                    c not in ["Date", "Year", "Week", "WeekRange", "WeekStart", "WeekEnd"]]],
                         use_container_width=True
                     )
@@ -1312,7 +1325,15 @@ def main():
                 for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
                     df_metrics_weekly[c] = df_metrics_weekly[c].round(3)
 
-                st.dataframe(df_metrics_weekly, use_container_width=True)
+                # ---- Format số theo dạng 000,000,000.00 ----
+                format_cols = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
+                df_formatted_weekly = df_metrics_weekly.copy()
+                for c in ["MSE", "RMSE", "MAE"]:
+                    df_formatted_weekly[c] = df_formatted_weekly[c].apply(lambda x: f"{x:,.2f}")
+                for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
+                    df_formatted_weekly[c] = df_formatted_weekly[c].apply(lambda x: f"{x:,.3f}")
+                    
+                st.dataframe(df_formatted_weekly, use_container_width=True)
 
             else:
                 st.info("Không có dữ liệu Weekly để tính metrics.")
@@ -1354,7 +1375,7 @@ def main():
         # 7.2 Tab Monthly
         # -----------------
         with tab_cmp_monthly:
-            df_monthly = df_show.copy()
+            df_monthly = df_eval.copy()
             df_monthly["Date"] = pd.to_datetime(df_monthly["Date"])
 
             # Convert thành tháng
@@ -1423,10 +1444,14 @@ def main():
             st.altair_chart(chart_monthly, use_container_width=True)
 
             with st.expander("Xem bảng Monthly (Actual + Models)"):
+                df_monthly_show = df_monthly.copy()
+                for c in df_monthly_show.columns:
+                    if c.startswith("Monthly"):
+                        df_monthly_show[c] = df_monthly_show[c].round().astype("Int64").apply(lambda x: f"{x:,.0f}")
                 st.dataframe(
-                    df_monthly[
+                    df_monthly_show[
                         ["MonthRange"] +
-                        [c for c in df_monthly.columns if c not in
+                        [c for c in df_monthly_show.columns if c not in
                          ["Date", "MonthStart", "MonthEnd", "MonthRange"]]
                         ],
                     use_container_width=True
@@ -1468,14 +1493,22 @@ def main():
                 })
 
             if metrics_rows:
+                st.subheader("Đánh giá sai số theo từng model – dữ liệu Monthly")
                 df_metrics_monthly = pd.DataFrame(metrics_rows)
                 for c in ["MSE", "RMSE", "MAE"]:
                     df_metrics_monthly[c] = df_metrics_monthly[c].round(2)
                 for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
                     df_metrics_monthly[c] = df_metrics_monthly[c].round(3)
 
-                st.subheader("Đánh giá sai số theo từng model – dữ liệu Monthly")
-                st.dataframe(df_metrics_monthly, use_container_width=True)
+                # ---- Format số theo dạng 000,000,000.00 ----
+                format_cols = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
+                df_formatted_monthly = df_metrics_monthly.copy()
+                for c in ["MSE", "RMSE", "MAE"]:
+                    df_formatted_monthly[c] = df_formatted_monthly[c].apply(lambda x: f"{x:,.2f}")
+                for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
+                    df_formatted_monthly[c] = df_formatted_monthly[c].apply(lambda x: f"{x:,.3f}")
+
+                st.dataframe(df_formatted_monthly, use_container_width=True)
 
             # ==== Biểu đồ cột cho từng đánh giá ====
             st.subheader("📊 Biểu đồ cột cho từng đánh giá sai số")
