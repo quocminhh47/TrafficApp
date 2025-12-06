@@ -445,23 +445,6 @@ def render_hcmc_eval_summary_for_route(route_id: str):
 
     r = row.iloc[0]
 
-    # st.markdown("### 📊 Đánh giá độ tin cậy mô hình (HCMC)")
-    #
-    # col1, col2, col3 = st.columns(3)
-    # with col1:
-    #     st.metric("MSE", f"{r['MSE']:.4f}")
-    # with col2:
-    #     st.metric("RMSE", f"{r['RMSE']:.4f}")
-    # with col3:
-    #     st.metric("MAE", f"{r['MAE']:.4f}")
-    #
-    # col4, col5 = st.columns(2)
-    # with col4:
-    #     st.metric("SMAPE", f"{r['SMAPE']:.2f} %")
-    # with col5:
-    #     st.metric("Accuracy", f"{r['Accuracy']:.1f} %")
-
-
 @lru_cache(maxsize=None)
 def _load_hcmc_raw_df():
     """Đọc raw HCMC + tính cột DateTime từ date + period_x_y."""
@@ -1280,7 +1263,7 @@ def render_hcmc_eval_summary_for_route(route_id: str):
 
     st.markdown("### 📊 Đánh giá độ tin cậy mô hình (HCMC)")
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.metric("MSE", f"{r['MSE']:.4f}")
     with col2:
@@ -1288,7 +1271,7 @@ def render_hcmc_eval_summary_for_route(route_id: str):
     with col3:
         st.metric("MAE", f"{r['MAE']:.4f}")
 
-    col4, col5 = st.columns(2)
+    # col4, col5 = st.columns(2)
     with col4:
         st.metric("SMAPE", f"{r['SMAPE']:.2f} %")
     with col5:
