@@ -447,7 +447,7 @@ def render_hcmc_eval_summary_for_route(route_id: str):
 
     st.markdown("### 📊 Đánh giá độ tin cậy mô hình (HCMC)")
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.metric("MSE", f"{r['MSE']:.4f}")
     with col2:
@@ -455,7 +455,7 @@ def render_hcmc_eval_summary_for_route(route_id: str):
     with col3:
         st.metric("MAE", f"{r['MAE']:.4f}")
 
-    col4, col5 = st.columns(2)
+    # col4, col5 = st.columns(2)
     with col4:
         st.metric("SMAPE", f"{r['SMAPE']:.2f} %")
     with col5:
@@ -622,9 +622,26 @@ def _load_hcmc_gru_model_for_route(route_id: str):
     return model
 
 
+@st.cache_resource
+def _load_hcmc_lstm_model_for_route(route_id: str):
+    """
+    Load model LSTM congestion cho 1 tuyến HCMC.
+    Giả định file: model/hcmc/lstm_congestion_<route_id>.keras
+    """
+    from tensorflow.keras.models import load_model
+
+    model_path = Path("model") / "hcmc" / f"lstm_congestion_{route_id}.keras"
+    if not model_path.exists():
+        raise FileNotFoundError(f"[HCMC] Không tìm thấy model LSTM: {model_path}")
+
+    print(f"[HCMC] Load LSTM model {model_path}")
+    model = load_model(model_path)
+    return model
+
+
 def forecast_hcmc_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
     """
-    Dùng GRU congestion để dự báo Mức độ kẹt xe cho 4 bước tiếp theo (2h tới).
+    Dùng GRU + LSTM congestion để dự báo Mức độ kẹt xe cho 4 bước tiếp theo (2h tới).
     Trả về (df_fc, full_name) hoặc None.
     """
     out = _load_hcmc_series_for_route(route_id, routes_geo_all)
@@ -642,34 +659,69 @@ def forecast_hcmc_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
     times = list(s.index)
     y_vals = list(s.values.astype(float))
 
-    model = _load_hcmc_gru_model_for_route(route_id)
+    def rollout_with_model(model):
+        preds = []
+        t_local = list(times)
+        y_local = list(y_vals)
 
-    preds = []
+        for _ in range(HCMC_FC_STEPS):
+            window_times = pd.DatetimeIndex(t_local[-HCMC_LOOKBACK:])
+            window_y = np.array(y_local[-HCMC_LOOKBACK:], dtype=float)
 
-    for _ in range(HCMC_FC_STEPS):
-        window_times = pd.DatetimeIndex(times[-HCMC_LOOKBACK:])
-        window_y = np.array(y_vals[-HCMC_LOOKBACK:], dtype=float)
+            total_minutes = window_times.hour * 60 + window_times.minute
+            sin_t = np.sin(2 * np.pi * total_minutes / (24 * 60))
+            cos_t = np.cos(2 * np.pi * total_minutes / (24 * 60))
 
-        total_minutes = window_times.hour * 60 + window_times.minute
-        sin_t = np.sin(2 * np.pi * total_minutes / (24 * 60))
-        cos_t = np.cos(2 * np.pi * total_minutes / (24 * 60))
+            weekday = window_times.weekday
+            sin_w = np.sin(2 * np.pi * weekday / 7.0)
+            cos_w = np.cos(2 * np.pi * weekday / 7.0)
 
-        weekday = window_times.weekday
-        sin_w = np.sin(2 * np.pi * weekday / 7.0)
-        cos_w = np.cos(2 * np.pi * weekday / 7.0)
+            F_window = np.stack([window_y, sin_t, cos_t, sin_w, cos_w], axis=1)
+            X = F_window[np.newaxis, :, :]
 
-        F_window = np.stack([window_y, sin_t, cos_t, sin_w, cos_w], axis=1)
-        X = F_window[np.newaxis, :, :]
+            p = float(model.predict(X, verbose=0).ravel()[0])
 
-        p = float(model.predict(X, verbose=0).ravel()[0])
+            # cập nhật history bên trong "thế giới data"
+            last_time = t_local[-1]
+            new_time = last_time + pd.Timedelta(minutes=HCMC_STEP_MINUTES)
+            t_local.append(new_time)
+            y_local.append(1.0 if p >= 0.5 else 0.0)
 
-        # cập nhật history bên trong "thế giới data"
-        last_time = times[-1]
-        new_time = last_time + pd.Timedelta(minutes=HCMC_STEP_MINUTES)
-        times.append(new_time)
-        y_vals.append(1.0 if p >= 0.5 else 0.0)
+            preds.append(p)
 
-        preds.append(p)
+        return preds
+
+    preds_dict: dict[str, list[float]] = {}
+
+    for model_name, loader in (
+        ("GRU", _load_hcmc_gru_model_for_route),
+        ("LSTM", _load_hcmc_lstm_model_for_route),
+    ):
+        try:
+            model = loader(route_id)
+            preds_dict[model_name] = rollout_with_model(model)
+        except FileNotFoundError as ex:
+            print(ex)
+
+    if not preds_dict:
+        return None
+
+    seq_len = max(len(v) for v in preds_dict.values())
+
+    prob_columns = {}
+    for name in ("GRU", "LSTM"):
+        vals = preds_dict.get(name)
+        if vals is None:
+            prob_columns[name] = [np.nan] * seq_len
+        elif len(vals) == seq_len:
+            prob_columns[name] = vals
+        else:
+            # bảo đảm cùng độ dài bằng cách padding NaN phía sau
+            pad_len = seq_len - len(vals)
+            prob_columns[name] = vals + [np.nan] * pad_len
+
+    preds_stack = np.array(list(prob_columns.values()), dtype=float)
+    preds_avg = np.nanmean(preds_stack, axis=0)
 
     # --- Phần này là MỚI: build trục thời gian theo "bây giờ" ---
     now = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh")
@@ -680,16 +732,15 @@ def forecast_hcmc_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
 
     display_times = [
         current_slot + pd.Timedelta(minutes=HCMC_STEP_MINUTES * (i + 1))
-        for i in range(len(preds))
+        for i in range(len(preds_avg))
     ]
 
-    df_fc = pd.DataFrame(
-        {
-            "DateTime": display_times,
-            "ProbCongested": preds,
-        }
-    )
-    return df_fc, full_name
+    df_fc = pd.DataFrame({"DateTime": display_times, "ProbCongested": preds_avg})
+    df_fc["Prob_GRU"] = prob_columns["GRU"]
+    df_fc["Prob_LSTM"] = prob_columns["LSTM"]
+
+    for name, vals in prob_columns.items():
+        df_fc[f"Prob_{name}"] = vals
 
     return df_fc, full_name
 
@@ -747,7 +798,7 @@ def render_hcmc_congestion_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
         )
     with col3:
         st.metric(
-            "Mức độ kẹt xe trung bình (2h tới)",
+            "Mức độ kẹt xe trung bình (GRU/LSTM)",
             f"{avg_prob*100:,.1f} %",
         )
 
@@ -787,7 +838,9 @@ def render_hcmc_congestion_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
 
     tooltip = [
         alt.Tooltip("DateTime:T", title="Thời gian"),
-        alt.Tooltip("ProbCongested:Q", title="Mức độ kẹt xe", format=".2f"),
+        alt.Tooltip("ProbCongested:Q", title="Trung bình (GRU/LSTM)", format=".2f"),
+        alt.Tooltip("Prob_GRU:Q", title="GRU", format=".2f"),
+        alt.Tooltip("Prob_LSTM:Q", title="LSTM", format=".2f"),
         alt.Tooltip("Level:N", title="Mức độ"),
     ]
 
@@ -1467,6 +1520,11 @@ def main():
 
         if not top_models:
             top_models = ["GRU"]
+
+        # Luôn thêm LSTM nếu có artifacts để ensemble với GRU
+        lstm_available = load_lstm_artifacts_for_family(ctx.family_name) is not None
+        if lstm_available and "LSTM" not in top_models:
+            top_models.append("LSTM")
     else:
         # Chưa chọn city/route → chưa show gì, chỉ map + message "chọn route"
         pass
@@ -1652,6 +1710,12 @@ def main():
                 else:
                     df_merge["Pred_ENSEMBLE"] = np.nan
 
+                # Trung bình riêng của GRU + LSTM để hiển thị tooltip khi hover chart
+                if {"Pred_GRU", "Pred_LSTM"} <= set(df_merge.columns):
+                    df_merge["Pred_GRU_LSTM_AVG"] = df_merge[
+                        ["Pred_GRU", "Pred_LSTM"]
+                    ].mean(axis=1)
+
                 df_merge["PredictedVehicles"] = df_merge["Pred_ENSEMBLE"]
                 df_fc_raw = df_merge.copy()
             else:
@@ -1774,8 +1838,7 @@ def main():
                             """,
                             unsafe_allow_html=True,
                         )
-
-                        st.markdown(f"**Ensemble models:** {', '.join(top_models)}")
+                        st.markdown(f"**Mô hình sử dụng:** {', '.join(top_models)}")
 
                         # Tooltip hiển thị từng model nếu có
                         tooltip_fields = [
@@ -1797,6 +1860,14 @@ def main():
                         if "Pred_LSTM" in df_day.columns:
                             tooltip_fields.append(
                                 alt.Tooltip("Pred_LSTM:Q", title="LSTM", format=".0f")
+                            )
+                        if "Pred_GRU_LSTM_AVG" in df_day.columns:
+                            tooltip_fields.append(
+                                alt.Tooltip(
+                                    "Pred_GRU_LSTM_AVG:Q",
+                                    title="Trung bình GRU + LSTM",
+                                    format=".0f",
+                                )
                             )
 
                         tooltip_fields.append(
@@ -2292,7 +2363,7 @@ def main():
                     df_formatted_weekly[c] = df_formatted_weekly[c].apply(lambda x: f"{x:,.2f}")
                 for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
                     df_formatted_weekly[c] = df_formatted_weekly[c].apply(lambda x: f"{x:,.3f}")
-                    
+
                 st.dataframe(df_formatted_weekly, use_container_width=True)
 
             else:
