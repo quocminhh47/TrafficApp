@@ -621,10 +621,25 @@ def _load_hcmc_gru_model_for_route(route_id: str):
     model = load_model(model_path)
     return model
 
+@st.cache_resource
+def _load_hcmc_lstm_model_for_route(route_id: str):
+    """
+    Load model LSTM congestion cho 1 tuyến HCMC.
+    Giả định file: model/hcmc/lstm_congestion_<route_id>.keras
+    """
+    from tensorflow.keras.models import load_model
+
+    model_path = Path("model") / "hcmc" / f"lstm_congestion_{route_id}.keras"
+    if not model_path.exists():
+        raise FileNotFoundError(f"[HCMC] Không tìm thấy model LSTM: {model_path}")
+
+    print(f"[HCMC] Load LSTM model {model_path}")
+    model = load_model(model_path)
+    return model
 
 def forecast_hcmc_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
     """
-    Dùng GRU congestion để dự báo Mức độ kẹt xe cho 4 bước tiếp theo (2h tới).
+    Dùng GRU vs LSTM congestion để dự báo Mức độ kẹt xe cho 4 bước tiếp theo (2h tới).
     Trả về (df_fc, full_name) hoặc None.
     """
     out = _load_hcmc_series_for_route(route_id, routes_geo_all)
@@ -1538,8 +1553,8 @@ def main():
         render_hcmc_departure_advisor(route_id, routes_geo_all)
         # 3) Heatmap mẫu hình cả tuần
         render_hcmc_weekly_pattern(route_id, routes_geo_all)
-        st.markdown("---")
-        render_hcmc_eval_summary_for_route(route_id)
+        # st.markdown("---")
+        # render_hcmc_eval_summary_for_route(route_id)
         return
 
     # ====================================
