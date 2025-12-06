@@ -1,6 +1,7 @@
-# scripts/eval_hcmc_congestion_gru_lstm.py
+# scripts/eval_hcmc_congestion_selected_routes.py
 
 import os
+import json
 import math
 import unicodedata
 from typing import Dict, List, Tuple
@@ -9,11 +10,14 @@ import numpy as np
 import pandas as pd
 from tensorflow.keras.models import load_model  # type: ignore
 
-# ==== CẤU HÌNH ====
+# =====================
+# CẤU HÌNH PATH
+# =====================
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 
-CSV_PATH = os.path.join(BASE_DIR, "data", "raw", "hcmc", "train.csv")
+TRAIN_CSV = os.path.join(BASE_DIR, "data", "raw", "hcmc", "train.csv")
+ROUTES_GEO_JSON = os.path.join(BASE_DIR, "data", "routes_geo.json")
 
 MODEL_DIR = os.path.join(BASE_DIR, "model", "hcmc")
 
@@ -23,27 +27,87 @@ DETAIL_DIR = os.path.join(OUTPUT_DIR, "details")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(DETAIL_DIR, exist_ok=True)
 
-LOOKBACK = 16          # cùng logic train
-TRAIN_RATIO = 0.8      # chia theo thời gian
+# =====================
+# THAM SỐ
+# =====================
+
+LOOKBACK = 16
+TRAIN_RATIO = 0.8
 CONGESTED_LOS = {"D", "E", "F"}
 
-
-# ==== HÀM TIỆN ÍCH GIỐNG TRAIN GRU ====
-
+import unicodedata
+import re
 
 def slugify(text: str) -> str:
+    """
+    Chuẩn hóa tên đường thành slug an toàn:
+      - Đ/đ/Ð/ð -> D/d
+      - bỏ dấu tiếng Việt
+      - chỉ giữ [a-z0-9_], các ký tự khác -> '_'
+      - gộp nhiều '_' liên tiếp thành 1, bỏ '_' đầu/cuối
+    Ví dụ:
+      'Nguyễn Ðình Chiểu' -> 'nguyen_dinh_chieu'
+      'Lê Đức Thọ'        -> 'le_duc_tho'
+      'Phan Đăng Lưu'     -> 'phan_dang_luu'
+    """
+    if text is None:
+        return ""
+
+    # 1) Chuẩn hóa riêng ký tự Đ/đ/Ð/ð trước khi đổi sang ASCII
+    text = (
+        text.replace("Đ", "D")
+            .replace("đ", "d")
+            .replace("Ð", "D")
+            .replace("ð", "d")
+    )
+
+    # 2) Loại bỏ dấu tiếng Việt
     text = unicodedata.normalize("NFKD", text)
-    text = text.encode("ascii", "ignore").decode("ascii")
-    text = text.lower().replace(" ", "_")
-    for ch in ["/", "\\", ",", ".", ":", ";", "(", ")", "'", '"']:
-        text = text.replace(ch, "")
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+
+    # 3) Lower case
+    text = text.lower()
+
+    # 4) Mọi thứ không phải chữ/số -> '_'
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+
+    # 5) Gộp nhiều '_' liên tiếp, bỏ '_' đầu/cuối
+    text = re.sub(r"_+", "_", text).strip("_")
+
     return text
+
+
+
+def load_hcmc_route_ids_from_geo() -> Dict[str, str]:
+    """
+    Đọc routes_geo.json và lấy các route HCMC:
+      key   = route_id (slug, ví dụ 'ly_thuong_kiet')
+      value = name hiển thị (ví dụ 'Lý Thường Kiệt (HCMC)')
+    """
+    if not os.path.exists(ROUTES_GEO_JSON):
+        raise FileNotFoundError(f"Không thấy routes_geo.json tại {ROUTES_GEO_JSON}")
+
+    with open(ROUTES_GEO_JSON, "r", encoding="utf-8") as f:
+        geo = json.load(f)
+
+    mapping: Dict[str, str] = {}
+    for rec in geo:
+        if rec.get("city") == "HoChiMinh":
+            rid = rec.get("route_id")
+            name = rec.get("name", rid)
+            if rid:
+                mapping[str(rid)] = str(name)
+
+    print("[INFO] Các route HCMC sẽ đánh giá (theo routes_geo.json):")
+    for rid, name in mapping.items():
+        print(f"  - {rid}  =>  {name}")
+    return mapping
 
 
 def build_datetime(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["date"] = pd.to_datetime(df["date"])
-    # period dạng "period_7_0", "period_16_30"
+    # period dạng "period_7_0", "period_16_30", ...
     period_num = df["period"].astype(str).str.extract(r"period_(\d+)_(\d+)", expand=True).astype(int)
     df["hour"] = period_num[0]
     df["minute"] = period_num[1]
@@ -55,24 +119,32 @@ def build_datetime(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build_congestion_series(df: pd.DataFrame, street_name: str) -> pd.Series:
+def build_congestion_series_for_slug(df: pd.DataFrame, slug: str) -> pd.Series:
     """
-    Giống train: group theo DateTime, tính is_congested (0/1) từ LOS.
+    Gom tất cả street_name sao cho slugify(street_name) == slug,
+    rồi group theo DateTime để tạo chuỗi is_congested (0/1).
     """
-    df_st = df[df["street_name"] == street_name].copy()
-    if df_st.empty:
-        raise ValueError(f"Không có dữ liệu cho street_name='{street_name}'")
+    df = df.copy()
+    # tính thêm cột slug_from_name
+    df["slug_from_name"] = df["street_name"].astype(str).apply(slugify)
+    df_sub = df[df["slug_from_name"] == slug].copy()
+
+    if df_sub.empty:
+        raise ValueError(f"[WARN] Không tìm thấy dữ liệu nào có slug='{slug}' trong train.csv")
 
     def is_congested(group: pd.Series) -> int:
         ratio_congested = (group.isin(CONGESTED_LOS)).mean()
         return int(ratio_congested >= 0.5)
 
     s = (
-        df_st.groupby("DateTime")["LOS"]
+        df_sub.groupby("DateTime")["LOS"]
         .apply(is_congested)
         .sort_index()
         .astype(int)
     )
+
+    print(f"[INFO] slug='{slug}': {len(s)} mốc thời gian (sau khi gộp tất cả street_name cùng slug)")
+    print(s.value_counts().rename(index={0: "Không tắc (0)", 1: "Tắc (1)"}))
     return s
 
 
@@ -139,11 +211,6 @@ def time_series_train_test_split(
 
 
 def compute_common_metrics_offline(y_true, y_pred_proba) -> Dict[str, float]:
-    """
-    Đánh giá cho bài toán binary (0/1, dự báo xác suất):
-      - MSE, RMSE, MAE, SMAPE (%)
-      - Accuracy (%) sau khi threshold 0.5.
-    """
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred_proba, dtype=float)
 
@@ -160,9 +227,7 @@ def compute_common_metrics_offline(y_true, y_pred_proba) -> Dict[str, float]:
     mae = float(np.mean(np.abs(diff)))
 
     denom = np.abs(y_true) + np.abs(y_pred)
-    smape = float(
-        np.mean(2.0 * np.abs(diff) / (denom + 1e-8)) * 100.0
-    )
+    smape = float(np.mean(2.0 * np.abs(diff) / (denom + 1e-8)) * 100.0)
 
     y_bin = (y_pred >= 0.5).astype(float)
     acc = float(np.mean(y_bin == y_true) * 100.0)
@@ -176,39 +241,25 @@ def compute_common_metrics_offline(y_true, y_pred_proba) -> Dict[str, float]:
     }
 
 
-def find_street_slug_mapping(df: pd.DataFrame) -> List[Tuple[str, str]]:
-    """
-    Trả về list (street_name, slug) cho mọi tuyến xuất hiện trong train.csv.
-    slug = slugify(street_name)
-    """
-    streets = df["street_name"].dropna().unique().tolist()
-    mapping = [(st, slugify(st)) for st in streets]
-    return mapping
-
-
 def eval_one_model_for_route(
-    street_name: str,
+    display_name: str,
     slug: str,
     model_type: str,
     X_test: np.ndarray,
     y_test: np.ndarray,
     idx_test: pd.DatetimeIndex,
 ) -> Dict:
-    """
-    Evaluate 1 model (GRU hoặc LSTM) cho 1 tuyến.
-    """
-    if model_type not in {"GRU", "LSTM"}:
-        raise ValueError(f"model_type không hỗ trợ: {model_type}")
-
     if model_type == "GRU":
         model_path = os.path.join(MODEL_DIR, f"gru_congestion_{slug}.keras")
-    else:
+    elif model_type == "LSTM":
         model_path = os.path.join(MODEL_DIR, f"lstm_congestion_{slug}.keras")
+    else:
+        raise ValueError(f"model_type không hỗ trợ: {model_type}")
 
     if not os.path.exists(model_path):
         print(f"  -> BỎ QUA {model_type}: không tìm thấy model: {model_path}")
         return {
-            "street_name": street_name,
+            "street_name": display_name,
             "slug": slug,
             "model_type": model_type,
             "timesteps": len(y_test),
@@ -227,7 +278,7 @@ def eval_one_model_for_route(
     if len(X_test) == 0:
         print("    (Test set rỗng)")
         return {
-            "street_name": street_name,
+            "street_name": display_name,
             "slug": slug,
             "model_type": model_type,
             "timesteps": len(y_test),
@@ -243,7 +294,6 @@ def eval_one_model_for_route(
     y_proba = model.predict(X_test, verbose=0).ravel()
     metrics = compute_common_metrics_offline(y_true=y_test, y_pred_proba=y_proba)
 
-    # Lưu chi tiết actual vs predict để vẽ biểu đồ sau này
     df_detail = pd.DataFrame(
         {
             "DateTime": idx_test,
@@ -256,11 +306,11 @@ def eval_one_model_for_route(
     print(f"    -> Đã lưu chi tiết: {detail_path}")
 
     return {
-        "street_name": street_name,
+        "street_name": display_name,
         "slug": slug,
         "model_type": model_type,
         "timesteps": len(y_test),
-        "n_seq_total": len(X_test) + int(len(X_test) / (1 - TRAIN_RATIO) * TRAIN_RATIO),  # gần đúng
+        "n_seq_total": len(X_test) + int(len(X_test) / (1 - TRAIN_RATIO) * TRAIN_RATIO),
         "n_seq_test": len(X_test),
         "MSE": metrics["MSE"],
         "RMSE": metrics["RMSE"],
@@ -271,30 +321,27 @@ def eval_one_model_for_route(
 
 
 def main():
-    print(f"[INFO] Đọc dữ liệu HCMC từ: {CSV_PATH}")
-    df_raw = pd.read_csv(CSV_PATH)
+    print(f"[INFO] Đọc train.csv từ: {TRAIN_CSV}")
+    df_raw = pd.read_csv(TRAIN_CSV)
     df = build_datetime(df_raw)
 
-    mapping = find_street_slug_mapping(df)
-    print(f"[INFO] Tìm thấy {len(mapping)} tuyến trong train.csv")
+    hcmc_routes = load_hcmc_route_ids_from_geo()  # slug -> display_name
 
     results = []
 
-    for street_name, slug in mapping:
+    for slug, display_name in hcmc_routes.items():
         print("\n" + "=" * 80)
-        print(f"[ROUTE] {street_name} (slug={slug})")
+        print(f"[ROUTE] {display_name} (slug={slug})")
         print("=" * 80)
 
         try:
-            s = build_congestion_series(df, street_name)
+            s = build_congestion_series_for_slug(df, slug)
         except Exception as ex:
-            print(f"  -> BỎ QUA: lỗi build_congestion_series: {ex}")
+            print(f"  -> BỎ QUA: lỗi build_congestion_series_for_slug: {ex}")
             continue
 
         if len(s) <= LOOKBACK + 10:
-            print(
-                f"  -> BỎ QUA: quá ít điểm ({len(s)}) so với LOOKBACK={LOOKBACK}"
-            )
+            print(f"  -> BỎ QUA: quá ít điểm ({len(s)}) so với LOOKBACK={LOOKBACK}")
             continue
 
         F, y, t_index = build_feature_matrix(s)
@@ -303,26 +350,24 @@ def main():
         X_train, X_test, y_train, y_test, idx_train, idx_test = time_series_train_test_split(
             X, y_target, idx, ratio=TRAIN_RATIO
         )
-        print(
-            f"  Seq tổng={len(X)}, Train={len(X_train)}, Test={len(X_test)}"
-        )
+        print(f"  Seq tổng={len(X)}, Train={len(X_train)}, Test={len(X_test)}")
 
-        # Đánh giá GRU (nếu có)
+        # GRU
         res_gru = eval_one_model_for_route(
-            street_name, slug, "GRU", X_test, y_test, idx_test
+            display_name, slug, "GRU", X_test, y_test, idx_test
         )
         results.append(res_gru)
 
-        # Đánh giá LSTM (nếu có)
+        # LSTM
         res_lstm = eval_one_model_for_route(
-            street_name, slug, "LSTM", X_test, y_test, idx_test
+            display_name, slug, "LSTM", X_test, y_test, idx_test
         )
         results.append(res_lstm)
 
     df_res = pd.DataFrame(results)
     out_summary = os.path.join(OUTPUT_DIR, "hcmc_eval_summary.csv")
     df_res.to_csv(out_summary, index=False)
-    print(f"\n[INFO] Đã lưu summary HCMC (GRU + LSTM): {out_summary}")
+    print(f"\n[INFO] Đã lưu summary HCMC (GRU + LSTM, chỉ các route HCMC trong map): {out_summary}")
     print(df_res)
 
 
