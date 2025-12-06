@@ -1467,6 +1467,11 @@ def main():
 
         if not top_models:
             top_models = ["GRU"]
+
+        # Luôn thêm LSTM nếu có artifacts để ensemble với GRU
+        lstm_available = load_lstm_artifacts_for_family(ctx.family_name) is not None
+        if lstm_available and "LSTM" not in top_models:
+            top_models.append("LSTM")
     else:
         # Chưa chọn city/route → chưa show gì, chỉ map + message "chọn route"
         pass
@@ -1652,6 +1657,12 @@ def main():
                 else:
                     df_merge["Pred_ENSEMBLE"] = np.nan
 
+                # Trung bình riêng của GRU + LSTM để hiển thị tooltip khi hover chart
+                if {"Pred_GRU", "Pred_LSTM"} <= set(df_merge.columns):
+                    df_merge["Pred_GRU_LSTM_AVG"] = df_merge[
+                        ["Pred_GRU", "Pred_LSTM"]
+                    ].mean(axis=1)
+
                 df_merge["PredictedVehicles"] = df_merge["Pred_ENSEMBLE"]
                 df_fc_raw = df_merge.copy()
             else:
@@ -1796,6 +1807,14 @@ def main():
                         if "Pred_LSTM" in df_day.columns:
                             tooltip_fields.append(
                                 alt.Tooltip("Pred_LSTM:Q", title="LSTM", format=".0f")
+                            )
+                        if "Pred_GRU_LSTM_AVG" in df_day.columns:
+                            tooltip_fields.append(
+                                alt.Tooltip(
+                                    "Pred_GRU_LSTM_AVG:Q",
+                                    title="Trung bình GRU + LSTM",
+                                    format=".0f",
+                                )
                             )
 
                         tooltip_fields.append(
