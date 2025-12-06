@@ -445,21 +445,21 @@ def render_hcmc_eval_summary_for_route(route_id: str):
 
     r = row.iloc[0]
 
-    st.markdown("### 📊 Đánh giá độ tin cậy mô hình (HCMC)")
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("MSE", f"{r['MSE']:.4f}")
-    with col2:
-        st.metric("RMSE", f"{r['RMSE']:.4f}")
-    with col3:
-        st.metric("MAE", f"{r['MAE']:.4f}")
-
-    col4, col5 = st.columns(2)
-    with col4:
-        st.metric("SMAPE", f"{r['SMAPE']:.2f} %")
-    with col5:
-        st.metric("Accuracy", f"{r['Accuracy']:.1f} %")
+    # st.markdown("### 📊 Đánh giá độ tin cậy mô hình (HCMC)")
+    #
+    # col1, col2, col3 = st.columns(3)
+    # with col1:
+    #     st.metric("MSE", f"{r['MSE']:.4f}")
+    # with col2:
+    #     st.metric("RMSE", f"{r['RMSE']:.4f}")
+    # with col3:
+    #     st.metric("MAE", f"{r['MAE']:.4f}")
+    #
+    # col4, col5 = st.columns(2)
+    # with col4:
+    #     st.metric("SMAPE", f"{r['SMAPE']:.2f} %")
+    # with col5:
+    #     st.metric("Accuracy", f"{r['Accuracy']:.1f} %")
 
 
 @lru_cache(maxsize=None)
@@ -621,6 +621,7 @@ def _load_hcmc_gru_model_for_route(route_id: str):
     model = load_model(model_path)
     return model
 
+
 @st.cache_resource
 def _load_hcmc_lstm_model_for_route(route_id: str):
     """
@@ -637,9 +638,10 @@ def _load_hcmc_lstm_model_for_route(route_id: str):
     model = load_model(model_path)
     return model
 
+
 def forecast_hcmc_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
     """
-    Dùng GRU vs LSTM congestion để dự báo Mức độ kẹt xe cho 4 bước tiếp theo (2h tới).
+    Dùng GRU + LSTM congestion để dự báo Mức độ kẹt xe cho 4 bước tiếp theo (2h tới).
     Trả về (df_fc, full_name) hoặc None.
     """
     out = _load_hcmc_series_for_route(route_id, routes_geo_all)
@@ -657,34 +659,69 @@ def forecast_hcmc_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
     times = list(s.index)
     y_vals = list(s.values.astype(float))
 
-    model = _load_hcmc_gru_model_for_route(route_id)
+    def rollout_with_model(model):
+        preds = []
+        t_local = list(times)
+        y_local = list(y_vals)
 
-    preds = []
+        for _ in range(HCMC_FC_STEPS):
+            window_times = pd.DatetimeIndex(t_local[-HCMC_LOOKBACK:])
+            window_y = np.array(y_local[-HCMC_LOOKBACK:], dtype=float)
 
-    for _ in range(HCMC_FC_STEPS):
-        window_times = pd.DatetimeIndex(times[-HCMC_LOOKBACK:])
-        window_y = np.array(y_vals[-HCMC_LOOKBACK:], dtype=float)
+            total_minutes = window_times.hour * 60 + window_times.minute
+            sin_t = np.sin(2 * np.pi * total_minutes / (24 * 60))
+            cos_t = np.cos(2 * np.pi * total_minutes / (24 * 60))
 
-        total_minutes = window_times.hour * 60 + window_times.minute
-        sin_t = np.sin(2 * np.pi * total_minutes / (24 * 60))
-        cos_t = np.cos(2 * np.pi * total_minutes / (24 * 60))
+            weekday = window_times.weekday
+            sin_w = np.sin(2 * np.pi * weekday / 7.0)
+            cos_w = np.cos(2 * np.pi * weekday / 7.0)
 
-        weekday = window_times.weekday
-        sin_w = np.sin(2 * np.pi * weekday / 7.0)
-        cos_w = np.cos(2 * np.pi * weekday / 7.0)
+            F_window = np.stack([window_y, sin_t, cos_t, sin_w, cos_w], axis=1)
+            X = F_window[np.newaxis, :, :]
 
-        F_window = np.stack([window_y, sin_t, cos_t, sin_w, cos_w], axis=1)
-        X = F_window[np.newaxis, :, :]
+            p = float(model.predict(X, verbose=0).ravel()[0])
 
-        p = float(model.predict(X, verbose=0).ravel()[0])
+            # cập nhật history bên trong "thế giới data"
+            last_time = t_local[-1]
+            new_time = last_time + pd.Timedelta(minutes=HCMC_STEP_MINUTES)
+            t_local.append(new_time)
+            y_local.append(1.0 if p >= 0.5 else 0.0)
 
-        # cập nhật history bên trong "thế giới data"
-        last_time = times[-1]
-        new_time = last_time + pd.Timedelta(minutes=HCMC_STEP_MINUTES)
-        times.append(new_time)
-        y_vals.append(1.0 if p >= 0.5 else 0.0)
+            preds.append(p)
 
-        preds.append(p)
+        return preds
+
+    preds_dict: dict[str, list[float]] = {}
+
+    for model_name, loader in (
+        ("GRU", _load_hcmc_gru_model_for_route),
+        ("LSTM", _load_hcmc_lstm_model_for_route),
+    ):
+        try:
+            model = loader(route_id)
+            preds_dict[model_name] = rollout_with_model(model)
+        except FileNotFoundError as ex:
+            print(ex)
+
+    if not preds_dict:
+        return None
+
+    seq_len = max(len(v) for v in preds_dict.values())
+
+    prob_columns = {}
+    for name in ("GRU", "LSTM"):
+        vals = preds_dict.get(name)
+        if vals is None:
+            prob_columns[name] = [np.nan] * seq_len
+        elif len(vals) == seq_len:
+            prob_columns[name] = vals
+        else:
+            # bảo đảm cùng độ dài bằng cách padding NaN phía sau
+            pad_len = seq_len - len(vals)
+            prob_columns[name] = vals + [np.nan] * pad_len
+
+    preds_stack = np.array(list(prob_columns.values()), dtype=float)
+    preds_avg = np.nanmean(preds_stack, axis=0)
 
     # --- Phần này là MỚI: build trục thời gian theo "bây giờ" ---
     now = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh")
@@ -695,16 +732,15 @@ def forecast_hcmc_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
 
     display_times = [
         current_slot + pd.Timedelta(minutes=HCMC_STEP_MINUTES * (i + 1))
-        for i in range(len(preds))
+        for i in range(len(preds_avg))
     ]
 
-    df_fc = pd.DataFrame(
-        {
-            "DateTime": display_times,
-            "ProbCongested": preds,
-        }
-    )
-    return df_fc, full_name
+    df_fc = pd.DataFrame({"DateTime": display_times, "ProbCongested": preds_avg})
+    df_fc["Prob_GRU"] = prob_columns["GRU"]
+    df_fc["Prob_LSTM"] = prob_columns["LSTM"]
+
+    for name, vals in prob_columns.items():
+        df_fc[f"Prob_{name}"] = vals
 
     return df_fc, full_name
 
@@ -762,7 +798,7 @@ def render_hcmc_congestion_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
         )
     with col3:
         st.metric(
-            "Mức độ kẹt xe trung bình (2h tới)",
+            "Mức độ kẹt xe trung bình (GRU/LSTM)",
             f"{avg_prob*100:,.1f} %",
         )
 
@@ -802,7 +838,9 @@ def render_hcmc_congestion_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
 
     tooltip = [
         alt.Tooltip("DateTime:T", title="Thời gian"),
-        alt.Tooltip("ProbCongested:Q", title="Mức độ kẹt xe", format=".2f"),
+        alt.Tooltip("ProbCongested:Q", title="Trung bình (GRU/LSTM)", format=".2f"),
+        alt.Tooltip("Prob_GRU:Q", title="GRU", format=".2f"),
+        alt.Tooltip("Prob_LSTM:Q", title="LSTM", format=".2f"),
         alt.Tooltip("Level:N", title="Mức độ"),
     ]
 
@@ -910,38 +948,38 @@ def render_hcmc_congestion_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
                 f"{worst_travel:,.1f} phút",
                 help=f"Khung giờ dự kiến tốn thời gian nhất: {worst_slot}.",
             )
+        # ==== Bảng ngang Mức độ kẹt xe theo từng khung 30' ====
+        prob_pct = (df_fc.set_index("TimeLabel")["ProbCongested"] * 100).round(1)
+        tbl = prob_pct.to_frame().T
+        tbl.index = ["Mức độ kẹt xe (%)"]
 
+        styled_tbl = (
+            tbl.style
+            .format("{:,.1f}", na_rep="-")
+            .background_gradient(axis=1, cmap="RdYlGn_r")
+            .highlight_max(axis=1, color="#8B0000")
+        )
+
+        st.dataframe(styled_tbl, use_container_width=True, height=80)
+
+        st.markdown(
+            """
+            <div style="font-size:0.9rem; margin-top:4px;">
+              <b>Chú thích màu:</b>
+              <span style="display:inline-block;width:14px;height:14px;background-color:#006400;border-radius:3px;margin:0 4px 0 8px;border:1px solid #ccc;"></span>
+              Xanh = nguy cơ tắc thấp
+              <span style="display:inline-block;width:14px;height:14px;background-color:#FFD700;border-radius:3px;margin:0 4px 0 12px;border:1px solid #ccc;"></span>
+              Vàng = trung bình
+              <span style="display:inline-block;width:14px;height:14px;background-color:#8B0000;border-radius:3px;margin:0 4px 0 12px;border:1px solid #ccc;"></span>
+              Đỏ = nguy cơ tắc cao
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         st.markdown("#### Bảng chi tiết theo từng khung 30 phút")
         st.dataframe(df_tt, use_container_width=True)
 
-    # ==== Bảng ngang Mức độ kẹt xe theo từng khung 30' ====
-    prob_pct = (df_fc.set_index("TimeLabel")["ProbCongested"] * 100).round(1)
-    tbl = prob_pct.to_frame().T
-    tbl.index = ["Mức độ kẹt xe (%)"]
 
-    styled_tbl = (
-        tbl.style
-        .format("{:,.1f}", na_rep="-")
-        .background_gradient(axis=1, cmap="RdYlGn_r")
-        .highlight_max(axis=1, color="#8B0000")
-    )
-
-    st.dataframe(styled_tbl, use_container_width=True, height=80)
-
-    st.markdown(
-        """
-        <div style="font-size:0.9rem; margin-top:4px;">
-          <b>Chú thích màu:</b>
-          <span style="display:inline-block;width:14px;height:14px;background-color:#006400;border-radius:3px;margin:0 4px 0 8px;border:1px solid #ccc;"></span>
-          Xanh = nguy cơ tắc thấp
-          <span style="display:inline-block;width:14px;height:14px;background-color:#FFD700;border-radius:3px;margin:0 4px 0 12px;border:1px solid #ccc;"></span>
-          Vàng = trung bình
-          <span style="display:inline-block;width:14px;height:14px;background-color:#8B0000;border-radius:3px;margin:0 4px 0 12px;border:1px solid #ccc;"></span>
-          Đỏ = nguy cơ tắc cao
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
 
 def render_hcmc_departure_advisor(route_id: str, routes_geo_all: pd.DataFrame):
@@ -1553,8 +1591,8 @@ def main():
         render_hcmc_departure_advisor(route_id, routes_geo_all)
         # 3) Heatmap mẫu hình cả tuần
         render_hcmc_weekly_pattern(route_id, routes_geo_all)
-        # st.markdown("---")
-        # render_hcmc_eval_summary_for_route(route_id)
+        st.markdown("---")
+        render_hcmc_eval_summary_for_route(route_id)
         return
 
     # ====================================
