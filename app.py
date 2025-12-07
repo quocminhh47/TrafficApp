@@ -1857,7 +1857,7 @@ def main():
                             alt.Tooltip("DateTime:T", title="Thời gian"),
                             alt.Tooltip(
                                 "Pred_ENSEMBLE:Q",
-                                title="Dự báo ensemble",
+                                title="Gía trị trung bình",
                                 format=".0f",
                             ),
                         ]
@@ -1873,22 +1873,6 @@ def main():
                             tooltip_fields.append(
                                 alt.Tooltip("Pred_LSTM:Q", title="LSTM", format=".0f")
                             )
-                        if "Pred_GRU_LSTM_AVG" in df_day.columns:
-                            tooltip_fields.append(
-                                alt.Tooltip(
-                                    "Pred_GRU_LSTM_AVG:Q",
-                                    title="Trung bình GRU + LSTM",
-                                    format=".0f",
-                                )
-                            )
-
-                        tooltip_fields.append(
-                            alt.Tooltip(
-                                "PredictedVehicles:Q",
-                                title="Ensemble (avg)",
-                                format=".0f",
-                            )
-                        )
 
                         df_day = df_day.copy()
 
