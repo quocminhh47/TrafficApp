@@ -391,16 +391,24 @@ def forecast_week_after_last_point(route_id, city, zone, ctx, n_days=7, model_ty
     return df_fc_raw, anchor_day_raw
 
 
-def shift_forecast_to_today(df_fc_raw, anchor_day_raw, target_today=None):
+def shift_forecast_to_today(
+    df_fc_raw,
+    anchor_day_raw,
+    target_today=None,
+    *,
+    drop_past_hours: bool = True,
+):
     """
     Dịch cột DateTime của forecast sang 'hôm nay' mong muốn.
 
-    Ý tưởng:
+    Ý tưởng mới:
     - anchor_day_raw = ngày cuối cùng trong data thật (VD: 2018-10-31).
+    - Dữ liệu forecast bắt đầu từ anchor_day_raw + 1 ngày (00:00) → map về *hôm nay*.
     - target_today = ngày "hôm nay" trên UI (VD: 2025-11-18).
     - Sau khi shift:
-        - anchor_day_raw sẽ map về target_today,
-        - nên các forecast (ngày sau anchor_day_raw) sẽ map về target_today+1, target_today+2, ...
+        - anchor_day_raw + 1 → target_today (đầu ngày)
+        - anchor_day_raw + 2 → target_today + 1, ...
+    - Nếu drop_past_hours=True: bỏ các mốc thời gian đã qua (chỉ giữ từ hiện tại → 7 ngày tới).
     """
     if df_fc_raw is None or df_fc_raw.empty:
         return df_fc_raw
@@ -412,10 +420,19 @@ def shift_forecast_to_today(df_fc_raw, anchor_day_raw, target_today=None):
         # không biết anchor, thôi không dịch
         return df_fc_raw
 
-    delta = target_today - anchor_day_raw
+    # Forecast luôn bắt đầu từ ngày sau anchor → map ngày đó về target_today
+    base_forecast_day = pd.to_datetime(anchor_day_raw).normalize() + pd.Timedelta(days=1)
+    delta = target_today - base_forecast_day
 
     df_shifted = df_fc_raw.copy()
+    df_shifted["DateTime"] = pd.to_datetime(df_shifted["DateTime"], errors="coerce")
+    df_shifted = df_shifted.dropna(subset=["DateTime"])
     df_shifted["DateTime"] = df_shifted["DateTime"] + delta
+
+    if drop_past_hours:
+        now_floor = pd.Timestamp.now().floor("H")
+        df_shifted = df_shifted[df_shifted["DateTime"] >= now_floor]
+
     return df_shifted
 
 # -------------------------------------------------

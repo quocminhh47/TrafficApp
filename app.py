@@ -20,6 +20,7 @@ from modules.model_utils import (
     forecast_rnn,
     forecast_lstm,
     forecast_week_after_last_point,
+    shift_forecast_to_today,
 )
 from modules.model_manager import load_model_context
 
@@ -1629,7 +1630,7 @@ def main():
     # 7) FORECAST – tuần kế tiếp sau dữ liệu gốc (ensemble GRU/RNN)
     # ====================================
     if tab == "FORECAST":
-        st.header(" Dự đoán lưu lượng giao thông cho 7 ngày tới")
+        st.header(" Dự đoán lưu lượng giao thông cho hôm nay và 7 ngày tới")
 
         dfs_for_ensemble = []
 
@@ -1645,7 +1646,7 @@ def main():
                     city=city,
                     zone=None if zone == "(All)" else zone,
                     ctx=ctx,
-                    n_days=7,
+                    n_days=8,
                     model_type=m_name,
                 )
             elif m_name == "LSTM":
@@ -1655,7 +1656,7 @@ def main():
                     city=city,
                     zone=None if zone == "(All)" else zone,
                     ctx=ctx,
-                    n_days=7,
+                    n_days=8,
                 )
             else:
                 df_m, anchor_m = None, None
@@ -1671,7 +1672,7 @@ def main():
                 city=city,
                 zone=None if zone == "(All)" else zone,
                 ctx=ctx,
-                n_days=7,
+                n_days=8,
                 model_type="GRU",
             )
             if df_fc_raw is not None and not df_fc_raw.empty:
@@ -1724,7 +1725,18 @@ def main():
         if df_fc_raw is None or df_fc_raw.empty:
             st.warning("Không forecast được (thiếu dữ liệu history).")
         else:
-            df_fc = df_fc_raw.copy()
+            target_today = pd.Timestamp.today().normalize()
+            df_fc = shift_forecast_to_today(
+                df_fc_raw,
+                anchor_day_raw,
+                target_today=target_today,
+                drop_past_hours=True,
+            )
+
+            if df_fc is None or df_fc.empty:
+                st.warning("Không có forecast hợp lệ sau khi dịch về hôm nay.")
+                return
+
             df_fc["DateTime"] = pd.to_datetime(df_fc["DateTime"], errors="coerce")
             df_fc = df_fc.dropna(subset=["DateTime"])
 
