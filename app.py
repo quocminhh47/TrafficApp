@@ -2159,14 +2159,12 @@ def main():
 
                     st.altair_chart(chart_hourly, use_container_width=True)
 
-                    df_table = df_hourly.copy()
-                    df_table.insert(0, "STT", range(len(df_table)))
-                    df_table = df_table.rename(
+                    df_table = df_hourly.rename(
                         columns={
                             "Hour": "Giờ",
                             "VehiclesPerHour": "Lưu lượng trung bình",
                         }
-                    )
+                    ).copy()
                     df_table["Giờ"] = df_table["Giờ"].apply(lambda h: f"{h}h")
                     df_table["Lưu lượng trung bình"] = df_table["Lưu lượng trung bình"].apply(
                         lambda v: f"{v:,.2f}" if pd.notna(v) else ""
