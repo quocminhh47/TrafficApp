@@ -2100,7 +2100,80 @@ def main():
                 df_eval = df_eval.merge(df_sarima, on="Date", how="left")
 
         # ---- Tab ----
-        tab_cmp_daily, tab_cmp_weekly, tab_cmp_monthly = st.tabs(["Daily", "Weekly", "Monthly"])
+        tab_cmp_hourly, tab_cmp_daily, tab_cmp_weekly, tab_cmp_monthly = st.tabs([
+            "Hourly", "Daily", "Weekly", "Monthly"
+        ])
+
+        # -----------------
+        # 7.0 Tab Hourly
+        # -----------------
+        with tab_cmp_hourly:
+            st.subheader("HOURLY – trung bình theo giờ trong 1 tháng gần nhất")
+
+            if df_full.empty:
+                st.info("Không có dữ liệu để tính trung bình theo giờ.")
+            else:
+                max_date = df_full["DateTime"].max()
+                start_dt = max_date - pd.DateOffset(months=1)
+                df_last_month = df_full[df_full["DateTime"] >= start_dt].copy()
+
+                if df_last_month.empty:
+                    st.info("Không có dữ liệu trong 1 tháng gần nhất để hiển thị.")
+                else:
+                    df_last_month["Hour"] = df_last_month["DateTime"].dt.hour
+                    df_hourly = (
+                        df_last_month
+                        .groupby("Hour")["Vehicles"]
+                        .mean()
+                        .reindex(range(24))
+                        .reset_index()
+                        .rename(columns={"Vehicles": "VehiclesPerHour"})
+                    )
+
+                    df_hourly["VehiclesPerHour"] = df_hourly["VehiclesPerHour"].round(2)
+
+                    st.caption(
+                        f"Khoảng dữ liệu: {start_dt.date()} → {max_date.date()}"
+                    )
+
+                    chart_hourly = (
+                        alt.Chart(df_hourly)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("Hour:O", title="Giờ trong ngày"),
+                            y=alt.Y(
+                                "VehiclesPerHour:Q",
+                                title="Lưu lượng trung bình (vehicles/giờ)",
+                            ),
+                            tooltip=[
+                                alt.Tooltip("Hour:O", title="Giờ"),
+                                alt.Tooltip(
+                                    "VehiclesPerHour:Q",
+                                    title="Lưu lượng trung bình",
+                                    format=",.2f",
+                                ),
+                            ],
+                        )
+                        .properties(height=320)
+                    )
+
+                    st.altair_chart(chart_hourly, use_container_width=True)
+
+                    df_table = df_hourly.copy()
+                    df_table.insert(0, "STT", range(len(df_table)))
+                    df_table = df_table.rename(
+                        columns={
+                            "Hour": "Giờ",
+                            "VehiclesPerHour": "Lưu lượng trung bình",
+                        }
+                    )
+                    df_table["Giờ"] = df_table["Giờ"].apply(lambda h: f"{h}h")
+                    df_table["Lưu lượng trung bình"] = df_table["Lưu lượng trung bình"].apply(
+                        lambda v: f"{v:,.2f}" if pd.notna(v) else ""
+                    )
+
+                    st.markdown("#### Bảng tổng hợp theo giờ")
+                    st.dataframe(df_table, use_container_width=True)
 
         # -----------------
         # 7.1 Tab Daily
