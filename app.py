@@ -1953,7 +1953,24 @@ def main():
                             tooltip=tooltip_fields,
                         )
 
-                        chart = (line + points).interactive().properties(
+                        labels = (
+                            base.mark_text(
+                                align="center",
+                                baseline="bottom",
+                                dy=-6,
+                                fontSize=11,
+                                color="#333",
+                            )
+                            .encode(
+                                y="PredictedVehicles:Q",
+                                text=alt.Text(
+                                    "PredictedVehicles:Q",
+                                    format=",.0f",
+                                ),
+                            )
+                        )
+
+                        chart = (line + points + labels).interactive().properties(
                             height=320,
                             title=f"Dự báo cho {vn_weekday_label(day_start)}",
                         )
@@ -2100,7 +2117,254 @@ def main():
                 df_eval = df_eval.merge(df_sarima, on="Date", how="left")
 
         # ---- Tab ----
-        tab_cmp_daily, tab_cmp_weekly, tab_cmp_monthly = st.tabs(["Daily", "Weekly", "Monthly"])
+        tab_cmp_hourly, tab_cmp_daily, tab_cmp_weekly, tab_cmp_monthly = st.tabs([
+            "Hourly", "Daily", "Weekly", "Monthly"
+        ])
+
+        # -----------------
+        # 7.0 Tab Hourly
+        # -----------------
+        with tab_cmp_hourly:
+            st.subheader("HOURLY – trung bình theo giờ trong 1 tháng gần nhất")
+
+            if df_full.empty:
+                st.info("Không có dữ liệu để tính trung bình theo giờ.")
+            else:
+                max_date = df_full["DateTime"].max()
+                start_dt = max_date - pd.DateOffset(months=1)
+                df_last_month = df_full[df_full["DateTime"] >= start_dt].copy()
+
+                if df_last_month.empty:
+                    st.info("Không có dữ liệu trong 1 tháng gần nhất để hiển thị.")
+                else:
+                    df_last_month["Hour"] = df_last_month["DateTime"].dt.hour
+
+                    df_actual_hourly = (
+                        df_last_month.set_index("DateTime")["Vehicles"]
+                        .resample("1H")
+                        .mean()
+                        .dropna()
+                        .reset_index()
+                        .rename(columns={"Vehicles": "Actual"})
+                    )
+                    df_actual_hourly["Hour"] = df_actual_hourly["DateTime"].dt.hour
+
+                    df_hourly = (
+                        df_actual_hourly
+                        .groupby("Hour")["Actual"]
+                        .mean()
+                        .reindex(range(24))
+                        .reset_index()
+                        .rename(columns={"Actual": "VehiclesPerHour"})
+                    )
+
+                    df_hourly["VehiclesPerHour"] = df_hourly["VehiclesPerHour"].round(2)
+
+                    min_date = df_last_month["DateTime"].min().date()
+                    max_date_date = max_date.date()
+
+                    st.caption(
+                        f"Khoảng dữ liệu: {min_date} → {max_date_date}"
+                    )
+
+                    chart_hourly = (
+                        alt.Chart(df_hourly)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("Hour:O", title="Giờ trong ngày"),
+                            y=alt.Y(
+                                "VehiclesPerHour:Q",
+                                title="Lưu lượng trung bình (vehicles/giờ)",
+                            ),
+                            tooltip=[
+                                alt.Tooltip("Hour:O", title="Giờ"),
+                                alt.Tooltip(
+                                    "VehiclesPerHour:Q",
+                                    title="Lưu lượng trung bình",
+                                    format=",.2f",
+                                ),
+                            ],
+                        )
+                        .properties(height=320)
+                    )
+
+                    st.altair_chart(chart_hourly, use_container_width=True)
+
+                    # ==== Dự báo theo giờ cho 1 tháng gần nhất (GRU / RNN / LSTM / ARIMA / SARIMA) ====
+                    dates_last_month = (
+                        df_last_month["DateTime"].dt.normalize().drop_duplicates().sort_values()
+                    )
+
+                    hourly_pred_frames: dict[str, pd.DataFrame] = {}
+                    seq_models = [
+                        ("LSTM", "LSTM"),
+                        ("GRU", "GRU"),
+                        ("RNN", "RNN"),
+                    ]
+
+                    for display_name, seq_type in seq_models:
+                        records = []
+                        for d in dates_last_month:
+                            df_fc, model_used = forecast_one_day(
+                                route_id=route_id,
+                                forecast_date=d,
+                                city=city,
+                                zone=zone,
+                                ctx=ctx,
+                                seq_model_type=seq_type,
+                            )
+                            if df_fc is None or df_fc.empty:
+                                continue
+
+                            df_fc = df_fc.copy()
+                            df_fc["DateTime"] = pd.to_datetime(
+                                df_fc["DateTime"], errors="coerce"
+                            )
+                            df_fc = df_fc.dropna(subset=["DateTime"])
+                            df_fc = df_fc[
+                                (df_fc["DateTime"] >= d)
+                                & (df_fc["DateTime"] < d + pd.Timedelta(days=1))
+                            ]
+                            if df_fc.empty:
+                                continue
+
+                            col = f"Pred_{display_name}"
+                            df_fc = df_fc.rename(columns={"PredictedVehicles": col})
+                            df_fc["Hour"] = df_fc["DateTime"].dt.hour
+                            records.append(df_fc[["DateTime", "Hour", col]])
+
+                        if records:
+                            hourly_pred_frames[col] = pd.concat(records, ignore_index=True)
+
+                    if HAS_ARIMA and forecast_arima_for_day is not None:
+                        arima_records = []
+                        for d in dates_last_month:
+                            try:
+                                out = forecast_arima_for_day(df_full, d)
+                                df_arima = out[0] if isinstance(out, tuple) else out
+                            except Exception:
+                                continue
+                            if df_arima is None or df_arima.empty:
+                                continue
+                            df_a = df_arima.copy()
+                            df_a["DateTime"] = pd.to_datetime(
+                                df_a["DateTime"], errors="coerce"
+                            )
+                            df_a = df_a.dropna(subset=["DateTime"])
+                            df_a = df_a[
+                                (df_a["DateTime"] >= d)
+                                & (df_a["DateTime"] < d + pd.Timedelta(days=1))
+                            ]
+                            if df_a.empty:
+                                continue
+                            pred_col = "Pred_ARIMA" if "Pred_ARIMA" in df_a.columns else "PredictedVehicles"
+                            if pred_col not in df_a.columns:
+                                continue
+                            df_a = df_a.rename(columns={pred_col: "Pred_ARIMA"})
+                            df_a["Hour"] = df_a["DateTime"].dt.hour
+                            arima_records.append(df_a[["DateTime", "Hour", "Pred_ARIMA"]])
+
+                        if arima_records:
+                            hourly_pred_frames["Pred_ARIMA"] = pd.concat(
+                                arima_records, ignore_index=True
+                            )
+
+                    if HAS_SARIMA and forecast_sarima_for_day is not None:
+                        sarima_records = []
+                        for d in dates_last_month:
+                            try:
+                                out = forecast_sarima_for_day(df_full, d)
+                                df_sarima = out[0] if isinstance(out, tuple) else out
+                            except Exception:
+                                continue
+                            if df_sarima is None or df_sarima.empty:
+                                continue
+                            df_s = df_sarima.copy()
+                            df_s["DateTime"] = pd.to_datetime(
+                                df_s["DateTime"], errors="coerce"
+                            )
+                            df_s = df_s.dropna(subset=["DateTime"])
+                            df_s = df_s[
+                                (df_s["DateTime"] >= d)
+                                & (df_s["DateTime"] < d + pd.Timedelta(days=1))
+                            ]
+                            if df_s.empty:
+                                continue
+                            pred_col = "Pred_SARIMA" if "Pred_SARIMA" in df_s.columns else "PredictedVehicles"
+                            if pred_col not in df_s.columns:
+                                continue
+                            df_s = df_s.rename(columns={pred_col: "Pred_SARIMA"})
+                            df_s["Hour"] = df_s["DateTime"].dt.hour
+                            sarima_records.append(df_s[["DateTime", "Hour", "Pred_SARIMA"]])
+
+                        if sarima_records:
+                            hourly_pred_frames["Pred_SARIMA"] = pd.concat(
+                                sarima_records, ignore_index=True
+                            )
+
+                    df_hourly_all = df_actual_hourly[["DateTime", "Hour", "Actual"]]
+                    for col_name, df_pred in hourly_pred_frames.items():
+                        df_hourly_all = df_hourly_all.merge(
+                            df_pred, on=["DateTime", "Hour"], how="left"
+                        )
+
+                    df_hourly_summary = (
+                        df_hourly_all
+                        .groupby("Hour")
+                        .mean(numeric_only=True)
+                        .reindex(range(24))
+                        .reset_index()
+                    )
+
+                    rename_map = {
+                        "Hour": "Giờ",
+                        "Actual": "Actual",
+                        "Pred_LSTM": "LSTM predict",
+                        "Pred_GRU": "GRU predict",
+                        "Pred_RNN": "RNN predict",
+                        "Pred_ARIMA": "ARIMA predict",
+                        "Pred_SARIMA": "SARIMA predict",
+                    }
+
+                    df_table = df_hourly_summary.rename(columns=rename_map).copy()
+                    df_table["Giờ"] = df_table["Giờ"].apply(lambda h: f"{int(h)}h")
+
+                    for c in df_table.columns:
+                        if c == "Giờ":
+                            continue
+                        df_table[c] = df_table[c].apply(
+                            lambda v: f"{v:,.2f}" if pd.notnull(v) else "-"
+                        )
+
+                    st.markdown(
+                        f"#### Bảng tổng hợp theo giờ ({min_date} → {max_date_date})"
+                    )
+                    st.dataframe(df_table, use_container_width=True)
+
+                    metric_rows = []
+                    for model_col, display_name in [
+                        ("Pred_LSTM", "LSTM"),
+                        ("Pred_GRU", "GRU"),
+                        ("Pred_RNN", "RNN"),
+                        ("Pred_ARIMA", "ARIMA"),
+                        ("Pred_SARIMA", "SARIMA"),
+                    ]:
+                        if model_col not in df_hourly_all.columns:
+                            continue
+                        valid = df_hourly_all.dropna(subset=["Actual", model_col])
+                        if valid.empty:
+                            continue
+                        mae = mean_absolute_error(
+                            valid["Actual"].values.astype(float),
+                            valid[model_col].values.astype(float),
+                        )
+                        metric_rows.append({"Model": display_name, "MAE": mae})
+
+                    if metric_rows:
+                        df_mae = pd.DataFrame(metric_rows)
+                        df_mae["MAE"] = df_mae["MAE"].apply(lambda x: f"{x:,.2f}")
+                        st.markdown("**MAE theo giờ cho từng mô hình (1 tháng gần nhất)**")
+                        st.dataframe(df_mae, use_container_width=True)
 
         # -----------------
         # 7.1 Tab Daily
@@ -2148,10 +2412,79 @@ def main():
                         "🔍 Xem bảng daily (Actual + Models) – 3 tháng gần nhất"
                 ):
                     df_show = df_eval.copy()
+                    weekday_map = {
+                        0: "Thứ 2",
+                        1: "Thứ 3",
+                        2: "Thứ 4",
+                        3: "Thứ 5",
+                        4: "Thứ 6",
+                        5: "Thứ 7",
+                        6: "Chủ nhật",
+                    }
+                    if "Date" in df_show.columns:
+                        df_show["Thứ"] = pd.to_datetime(df_show["Date"]).dt.dayofweek.map(
+                            weekday_map
+                        )
+                        ordered_cols = ["Date", "Thứ", "DailyActual"]
+                        for model_name in ["LSTM", "GRU", "RNN", "ARIMA", "SARIMA"]:
+                            col_name = f"Daily_{model_name}"
+                            if col_name in df_show.columns:
+                                ordered_cols.append(col_name)
+
+                        remaining_cols = [
+                            c for c in df_show.columns
+                            if c not in ordered_cols
+                        ]
+                        df_show = df_show[[c for c in ordered_cols if c in df_show.columns] + remaining_cols]
+
+                    rename_map = {
+                        "DailyActual": "Actual",
+                        "Daily_LSTM": "LSTM predict",
+                        "Daily_GRU": "GRU predict",
+                        "Daily_RNN": "RNN predict",
+                        "Daily_ARIMA": "ARIMA predict",
+                        "Daily_SARIMA": "SARIMA predict",
+                    }
+                    df_show = df_show.rename(columns=rename_map)
+
                     for c in df_show.columns:
-                        if c.startswith("Daily"):
-                            df_show[c] = df_show[c].round().astype("Int64").apply(lambda x: f"{x:,.0f}")
-                    st.dataframe(df_show.sort_values("Date"), use_container_width=True)
+                        if c.startswith(("Daily", "Actual", "LSTM", "GRU", "RNN", "ARIMA", "SARIMA")):
+                            df_show[c] = (
+                                df_show[c]
+                                .round()
+                                .astype("Int64")
+                                .apply(lambda x: f"{x:,.0f}")
+                            )
+
+                    df_show = df_show.sort_values("Date")
+                    if "Thứ" in df_show.columns:
+                        weekend_labels = {"Thứ 7", "Chủ nhật"}
+                        styler = df_show.style.applymap(
+                            lambda v: "font-weight: bold" if v in weekend_labels else "",
+                            subset=pd.IndexSlice[:, ["Thứ"]],
+                        )
+                        st.dataframe(styler, use_container_width=True)
+                    else:
+                        st.dataframe(df_show, use_container_width=True)
+
+                    daily_metrics_rows = []
+                    for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
+                        col_name = f"Daily_{m_name}"
+                        if col_name not in df_eval.columns:
+                            continue
+                        valid = df_eval[["DailyActual", col_name]].dropna()
+                        if valid.empty:
+                            continue
+                        actual = valid["DailyActual"].values.astype(float)
+                        pred = valid[col_name].values.astype(float)
+                        mae = mean_absolute_error(actual, pred)
+                        daily_metrics_rows.append({"Model": m_name, "MAE": mae})
+
+                    if daily_metrics_rows:
+                        df_mae = pd.DataFrame(daily_metrics_rows)
+                        df_mae["MAE"] = df_mae["MAE"].apply(lambda x: f"{x:,.2f}")
+                        st.markdown("**MAE cho từng mô hình (3 tháng gần nhất)**")
+                        st.dataframe(df_mae, use_container_width=True)
             else:
                 st.info("Không có series nào (GRU/RNN/LSTM/ARIMA/SARIMA) để hiển thị.")
 

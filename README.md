@@ -49,6 +49,38 @@ The Traffic Prediction App is a Streamlit-based web application designed to pred
 
 3. Open your browser and navigate to `http://localhost:8501` to access the app.
 
+### Train and export ARIMA/SARIMA daily forecasts
+
+Generate a parquet file with daily ARIMA and SARIMA predictions for a specific route using the newest raw data (example for Ho Chi Minh City):
+
+```sh
+python scripts/train_arima_sarima_daily.py --city hcmc --zone duong --route ly_thuong_kiet \
+  --days-back 90 --output outputs/arima_sarima_daily.parquet
+```
+
+Common run commands for the bundled datasets:
+
+* **Minneapolis – I94 corridor** (single route)
+  ```sh
+  python scripts/train_arima_sarima_daily.py --city Minneapolis --zone I94 --route i94_main \
+    --days-back 90 --output outputs/arima_sarima_daily_i94.parquet
+  ```
+
+* **Seattle – all Fremont Bridge routes** (run once per direction/total)
+  ```sh
+  # Eastbound
+  python scripts/train_arima_sarima_daily.py --city Seattle --zone FremontBridge --route Fremont_East \
+    --days-back 90 --output outputs/arima_sarima_daily_fremont_east.parquet
+
+  # Westbound
+  python scripts/train_arima_sarima_daily.py --city Seattle --zone FremontBridge --route Fremont_West \
+    --days-back 90 --output outputs/arima_sarima_daily_fremont_west.parquet
+
+  # Total (combined counters)
+  python scripts/train_arima_sarima_daily.py --city Seattle --zone FremontBridge --route Fremont_Total \
+    --days-back 90 --output outputs/arima_sarima_daily_fremont_total.parquet
+  ```
+
 ## App Structure
 
 ### Home
