@@ -2148,6 +2148,25 @@ def main():
                         "🔍 Xem bảng daily (Actual + Models) – 3 tháng gần nhất"
                 ):
                     df_show = df_eval.copy()
+                    weekday_map = {
+                        0: "Thứ 2",
+                        1: "Thứ 3",
+                        2: "Thứ 4",
+                        3: "Thứ 5",
+                        4: "Thứ 6",
+                        5: "Thứ 7",
+                        6: "Chủ nhật",
+                    }
+                    if "Date" in df_show.columns:
+                        df_show["Thứ"] = pd.to_datetime(df_show["Date"]).dt.dayofweek.map(
+                            weekday_map
+                        )
+                        cols = df_show.columns.tolist()
+                        thu_idx = cols.index("Thứ")
+                        date_idx = cols.index("Date")
+                        if thu_idx != date_idx + 1:
+                            cols.insert(date_idx + 1, cols.pop(thu_idx))
+                        df_show = df_show[cols]
                     for c in df_show.columns:
                         if c.startswith("Daily"):
                             df_show[c] = df_show[c].round().astype("Int64").apply(lambda x: f"{x:,.0f}")
