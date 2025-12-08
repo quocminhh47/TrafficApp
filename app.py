@@ -1953,7 +1953,17 @@ def main():
                             tooltip=tooltip_fields,
                         )
 
-                        chart = (line + points).interactive().properties(
+                        labels = base.mark_text(
+                            dy=-8,
+                            fontSize=11,
+                            fontWeight="bold",
+                            color="#333333",
+                        ).encode(
+                            y="PredictedVehicles:Q",
+                            text=alt.Text("PredictedVehicles:Q", format=".0f"),
+                        )
+
+                        chart = (line + points + labels).interactive().properties(
                             height=320,
                             title=f"Dự báo cho {vn_weekday_label(day_start)}",
                         )
