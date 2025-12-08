@@ -758,7 +758,7 @@ def render_hcmc_congestion_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
 
     df_fc, full_name = out
 
-    st.subheader(f"🚦 Dự báo nguy cơ tắc đường trong 2 giờ tới – {full_name}")
+    st.subheader(f" Dự báo nguy cơ tắc đường trong 2 giờ tới – {full_name}")
 
     df_fc = df_fc.copy()
     df_fc["DateTime"] = pd.to_datetime(df_fc["DateTime"], errors="coerce")
@@ -890,7 +890,7 @@ def render_hcmc_congestion_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
     st.altair_chart(chart, use_container_width=True)
 
     # =========================
-    # ⏱ Ước lượng thời gian di chuyển trong 2 giờ tới
+    # Ước lượng thời gian di chuyển trong 2 giờ tới
     # =========================
 
     # Chuẩn hóa df_slots cho hàm make_travel_time_table_for_slots
@@ -1004,7 +1004,7 @@ def render_hcmc_departure_advisor(route_id: str, routes_geo_all: pd.DataFrame):
     df_hist["minute"] = df_hist["DateTime"].dt.minute
     df_hist["weekday"] = df_hist["DateTime"].dt.weekday
 
-    st.subheader("🧭 Trợ lý chọn giờ đi đường")
+    st.subheader(" Trợ lý chọn giờ đi đường")
 
     st.markdown(
         f"Dựa trên dữ liệu lịch sử của tuyến **{full_name}**, "
@@ -1205,7 +1205,7 @@ def render_hcmc_weekly_pattern(route_id: str, routes_geo_all: pd.DataFrame):
     grp["CongestionPct"] = (grp["is_congested"] * 100.0).round(1)
     grp["HourStr"] = grp["hour"].astype(int).astype(str).str.zfill(2) + ":00"
 
-    st.subheader("📅 Mẫu hình kẹt xe trong tuần theo giờ")
+    st.subheader("Mẫu hình kẹt xe trong tuần theo giờ")
     st.markdown(
         "Màu càng đỏ = tuyến càng thường xuyên kẹt tại khung giờ đó "
         "(tính theo lịch sử trong tập dữ liệu HCMC)."
@@ -1257,7 +1257,7 @@ def main():
         st.session_state["last_clicked_route_id"] = None
 
     st.set_page_config(page_title="Traffic Forecast App", layout="wide")
-    st.title("🚦 Traffic Forecast App ")
+    st.title(" Traffic Forecast App ")
 
     # Apply pending selection từ map (trước khi tạo widget)
     if "pending_city" in st.session_state:
@@ -1536,7 +1536,7 @@ def main():
     # ====================================
     # 5) MAP COMPONENT
     # ====================================
-    st.subheader("🗺 Routes Map")
+    st.subheader("Bản đồ các tuyến đường")
 
     routes_geo_all = load_routes_geo().fillna("")
 
@@ -2102,7 +2102,7 @@ def main():
                 st.altair_chart(chart_daily, use_container_width=True)
 
                 with st.expander(
-                        "🔍 Xem bảng daily (Actual + Models) – 3 tháng gần nhất"
+                        "🔍 Xem thống kê lưu lượng giao thông theo từng ngày  (Actual + Models) trong 3 tháng gần nhất"
                 ):
                     df_show = df_eval.copy()
                     for c in df_show.columns:
