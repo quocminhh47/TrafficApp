@@ -1765,6 +1765,22 @@ def main():
                             st.info("Không có forecast cho ngày này.")
                             continue
 
+                        df_day["DateTime"] = pd.to_datetime(df_day["DateTime"], errors="coerce")
+                        df_day = df_day.dropna(subset=["DateTime"])
+
+                        # Chuẩn hóa về chính xác từng giờ (trong trường hợp có phút lẻ)
+                        df_day["DateTime"] = df_day["DateTime"].dt.floor("H")
+
+                        # Chỉ gộp các cột số (Vehicles, PredictedVehicles, Pred_GRU, Pred_LSTM, ...)
+                        num_cols = df_day.select_dtypes(include="number").columns.tolist()
+                        # nếu có cột không muốn gộp thì bỏ ra khỏi num_cols ở đây
+
+                        df_day = (
+                            df_day.groupby("DateTime", as_index=False)[num_cols]
+                            .mean()
+                            .sort_values("DateTime")
+                        )
+
                         # Cột dùng để phân tích: ưu tiên ensemble
                         metric_col = "PredictedVehicles_Ensemble"
                         if metric_col not in df_day.columns:
@@ -1814,6 +1830,27 @@ def main():
                                 f"{avg_val:,.0f} xe/giờ",
                             )
                         # Bảng ngang
+                        # st.markdown("### 🧮 Lưu lượng xe cộ theo giờ")
+                        #
+                        # # s: Series index = DateTime, value = Vehicles/h (ensemble)
+                        # s_label = s.copy()
+                        # s_label.index = s_label.index.strftime("%H:%M")
+                        # s_label_int = s_label.round(0).astype("Int64")  # convert to int, nullable
+                        #
+                        # # 1 dòng, các cột là giờ
+                        # tbl = s_label_int.to_frame().T
+                        # tbl.index = ["Vehicles/h"]
+                        #
+                        # styled_tbl = (
+                        #     tbl.style
+                        #     .format("{:,.0f}", na_rep="-")  # hiển thị int, có phân cách
+                        #     .background_gradient(axis=1, cmap="YlOrRd")  # thấp = vàng nhạt, cao = đỏ
+                        #     .highlight_max(axis=1, color="#7f0000   ")  # giờ cao điểm nhất tô đỏ hẳn
+                        # )
+                        #
+                        # st.dataframe(styled_tbl, use_container_width=True, height=70)
+                        # st.dataframe(styled_tbl, use_container_width=True, height=140)
+
                         st.markdown("### 🧮 Lưu lượng xe cộ theo giờ")
 
                         # s: Series index = DateTime, value = Vehicles/h (ensemble)
@@ -1821,19 +1858,25 @@ def main():
                         s_label.index = s_label.index.strftime("%H:%M")
                         s_label_int = s_label.round(0).astype("Int64")  # convert to int, nullable
 
+                        # Gộp theo giờ nếu vì lý do gì đó có trùng label (vd nhiều ngày dính chung)
+                        # -> đảm bảo mỗi giờ (cột) chỉ xuất hiện 1 lần
+                        s_hour = s_label_int.groupby(s_label_int.index).mean()
+
                         # 1 dòng, các cột là giờ
-                        tbl = s_label_int.to_frame().T
+                        tbl = s_hour.to_frame().T
                         tbl.index = ["Vehicles/h"]
+
+                        # Phòng trường hợp vẫn còn trùng cột (rất hiếm) -> bỏ bớt bản trùng
+                        tbl = tbl.loc[:, ~tbl.columns.duplicated()]
 
                         styled_tbl = (
                             tbl.style
                             .format("{:,.0f}", na_rep="-")  # hiển thị int, có phân cách
                             .background_gradient(axis=1, cmap="YlOrRd")  # thấp = vàng nhạt, cao = đỏ
-                            .highlight_max(axis=1, color="#7f0000   ")  # giờ cao điểm nhất tô đỏ hẳn
+                            .highlight_max(axis=1, color="#ff4b4b")  # giờ cao điểm nhất tô đỏ hẳn
                         )
 
                         st.dataframe(styled_tbl, use_container_width=True, height=70)
-                        # st.dataframe(styled_tbl, use_container_width=True, height=140)
 
                         # Chú giải màu
                         st.markdown(
