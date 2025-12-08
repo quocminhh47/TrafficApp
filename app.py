@@ -882,7 +882,17 @@ def render_hcmc_congestion_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
         tooltip=tooltip,
     )
 
-    chart = (area + line + points).properties(
+    labels = base.mark_text(
+        dy=-8,
+        fontSize=11,
+        fontWeight="bold",
+        color="#333333",
+    ).encode(
+        y="ProbCongested:Q",
+        text=alt.Text("ProbCongested:Q", format=".0%"),
+    )
+
+    chart = (area + line + points + labels).properties(
         height=260,
         title="Dự báo xác suất tắc trong 2 giờ tới",
     ).interactive()
@@ -1953,7 +1963,17 @@ def main():
                             tooltip=tooltip_fields,
                         )
 
-                        chart = (line + points).interactive().properties(
+                        labels = base.mark_text(
+                            dy=-8,
+                            fontSize=11,
+                            fontWeight="bold",
+                            color="#333333",
+                        ).encode(
+                            y="PredictedVehicles:Q",
+                            text=alt.Text("PredictedVehicles:Q", format=".0f"),
+                        )
+
+                        chart = (line + points + labels).interactive().properties(
                             height=320,
                             title=f"Dự báo cho {vn_weekday_label(day_start)}",
                         )
@@ -2100,7 +2120,78 @@ def main():
                 df_eval = df_eval.merge(df_sarima, on="Date", how="left")
 
         # ---- Tab ----
-        tab_cmp_daily, tab_cmp_weekly, tab_cmp_monthly = st.tabs(["Daily", "Weekly", "Monthly"])
+        tab_cmp_hourly, tab_cmp_daily, tab_cmp_weekly, tab_cmp_monthly = st.tabs([
+            "Hourly", "Daily", "Weekly", "Monthly"
+        ])
+
+        # -----------------
+        # 7.0 Tab Hourly
+        # -----------------
+        with tab_cmp_hourly:
+            st.subheader("HOURLY – trung bình theo giờ trong 1 tháng gần nhất")
+
+            if df_full.empty:
+                st.info("Không có dữ liệu để tính trung bình theo giờ.")
+            else:
+                max_date = df_full["DateTime"].max()
+                start_dt = max_date - pd.DateOffset(months=1)
+                df_last_month = df_full[df_full["DateTime"] >= start_dt].copy()
+
+                if df_last_month.empty:
+                    st.info("Không có dữ liệu trong 1 tháng gần nhất để hiển thị.")
+                else:
+                    df_last_month["Hour"] = df_last_month["DateTime"].dt.hour
+                    df_hourly = (
+                        df_last_month
+                        .groupby("Hour")["Vehicles"]
+                        .mean()
+                        .reindex(range(24))
+                        .reset_index()
+                        .rename(columns={"Vehicles": "VehiclesPerHour"})
+                    )
+
+                    df_hourly["VehiclesPerHour"] = df_hourly["VehiclesPerHour"].round(2)
+
+                    st.caption(
+                        f"Khoảng dữ liệu: {start_dt.date()} → {max_date.date()}"
+                    )
+
+                    chart_hourly = (
+                        alt.Chart(df_hourly)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("Hour:O", title="Giờ trong ngày"),
+                            y=alt.Y(
+                                "VehiclesPerHour:Q",
+                                title="Lưu lượng trung bình (vehicles/giờ)",
+                            ),
+                            tooltip=[
+                                alt.Tooltip("Hour:O", title="Giờ"),
+                                alt.Tooltip(
+                                    "VehiclesPerHour:Q",
+                                    title="Lưu lượng trung bình",
+                                    format=",.2f",
+                                ),
+                            ],
+                        )
+                        .properties(height=320)
+                    )
+
+                    st.altair_chart(chart_hourly, use_container_width=True)
+
+                    df_table = df_hourly.rename(
+                        columns={
+                            "Hour": "Giờ",
+                            "VehiclesPerHour": "Lưu lượng trung bình",
+                        }
+                    ).copy()
+                    df_table["Giờ"] = df_table["Giờ"].apply(lambda h: f"{h}h")
+                    df_table["Lưu lượng trung bình"] = df_table["Lưu lượng trung bình"].apply(
+                        lambda v: f"{v:,.2f}" if pd.notna(v) else ""
+                    )
+
+                    st.markdown("#### Bảng tổng hợp theo giờ")
+                    st.dataframe(df_table, use_container_width=True)
 
         # -----------------
         # 7.1 Tab Daily
@@ -2148,10 +2239,38 @@ def main():
                         "🔍 Xem bảng daily (Actual + Models) – 3 tháng gần nhất"
                 ):
                     df_show = df_eval.copy()
+                    weekday_map = {
+                        0: "Thứ 2",
+                        1: "Thứ 3",
+                        2: "Thứ 4",
+                        3: "Thứ 5",
+                        4: "Thứ 6",
+                        5: "Thứ 7",
+                        6: "Chủ nhật",
+                    }
+                    if "Date" in df_show.columns:
+                        df_show["Thứ"] = pd.to_datetime(df_show["Date"]).dt.dayofweek.map(
+                            weekday_map
+                        )
+                        cols = df_show.columns.tolist()
+                        thu_idx = cols.index("Thứ")
+                        date_idx = cols.index("Date")
+                        if thu_idx != date_idx + 1:
+                            cols.insert(date_idx + 1, cols.pop(thu_idx))
+                        df_show = df_show[cols]
                     for c in df_show.columns:
                         if c.startswith("Daily"):
                             df_show[c] = df_show[c].round().astype("Int64").apply(lambda x: f"{x:,.0f}")
-                    st.dataframe(df_show.sort_values("Date"), use_container_width=True)
+                    df_show = df_show.sort_values("Date")
+                    if "Thứ" in df_show.columns:
+                        weekend_labels = {"Thứ 7", "Chủ nhật"}
+                        styler = df_show.style.applymap(
+                            lambda v: "font-weight: bold" if v in weekend_labels else "",
+                            subset=pd.IndexSlice[:, ["Thứ"]],
+                        )
+                        st.dataframe(styler, use_container_width=True)
+                    else:
+                        st.dataframe(df_show, use_container_width=True)
             else:
                 st.info("Không có series nào (GRU/RNN/LSTM/ARIMA/SARIMA) để hiển thị.")
 
