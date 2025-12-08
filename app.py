@@ -2170,7 +2170,16 @@ def main():
                     for c in df_show.columns:
                         if c.startswith("Daily"):
                             df_show[c] = df_show[c].round().astype("Int64").apply(lambda x: f"{x:,.0f}")
-                    st.dataframe(df_show.sort_values("Date"), use_container_width=True)
+                    df_show = df_show.sort_values("Date")
+                    if "Thứ" in df_show.columns:
+                        weekend_labels = {"Thứ 7", "Chủ nhật"}
+                        styler = df_show.style.applymap(
+                            lambda v: "font-weight: bold" if v in weekend_labels else "",
+                            subset=pd.IndexSlice[:, ["Thứ"]],
+                        )
+                        st.dataframe(styler, use_container_width=True)
+                    else:
+                        st.dataframe(df_show, use_container_width=True)
             else:
                 st.info("Không có series nào (GRU/RNN/LSTM/ARIMA/SARIMA) để hiển thị.")
 
