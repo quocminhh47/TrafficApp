@@ -882,7 +882,17 @@ def render_hcmc_congestion_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
         tooltip=tooltip,
     )
 
-    chart = (area + line + points).properties(
+    labels = base.mark_text(
+        dy=-8,
+        fontSize=11,
+        fontWeight="bold",
+        color="#333333",
+    ).encode(
+        y="ProbCongested:Q",
+        text=alt.Text("ProbCongested:Q", format=".0%"),
+    )
+
+    chart = (area + line + points + labels).properties(
         height=260,
         title="Dự báo xác suất tắc trong 2 giờ tới",
     ).interactive()
