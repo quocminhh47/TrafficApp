@@ -36,55 +36,55 @@
     "zone": "HCMC",
     "route_id": "ly_thuong_kiet",
     "name": "Lý Thường Kiệt (HCMC)",
-    "lat": 10.78534224782787,
-    "lon": 106.65106135241804
+    "lat": 10.776291062388012,
+    "lon": 106.657060397801
   },
   {
     "city": "HoChiMinh",
     "zone": "HCMC",
     "route_id": "nguyen_kiem",
     "name": "Nguyễn Kiệm (HCMC)",
-    "lat": 10.809760434424778,
-    "lon": 106.67884558415929
+    "lat": 10.494633559895567,
+    "lon": 107.26940895550327
   },
   {
     "city": "HoChiMinh",
     "zone": "HCMC",
     "route_id": "nguyen_dinh_chieu",
     "name": "Nguyễn Ðình Chiểu (HCMC)",
-    "lat": 10.779813410913704,
-    "lon": 106.69137066700506
+    "lat": 10.804111435462564,
+    "lon": 106.68104534427115
   },
   {
     "city": "HoChiMinh",
     "zone": "HCMC",
     "route_id": "le_duc_tho",
     "name": "Lê Đức Thọ (HCMC)",
-    "lat": 10.849594853455724,
-    "lon": 106.66487665212384
+    "lat": 10.84844704577172,
+    "lon": 106.66753583858855
   },
   {
     "city": "HoChiMinh",
     "zone": "HCMC",
     "route_id": "quoc_lo_1a",
     "name": "Quốc lộ 1A (HCMC)",
-    "lat": 10.848366322388062,
-    "lon": 106.64254948283583
+    "lat": 10.766989848596282,
+    "lon": 106.59056290975201
   },
   {
     "city": "HoChiMinh",
     "zone": "HCMC",
     "route_id": "to_hien_thanh",
     "name": "Tô Hiến Thành (HCMC)",
-    "lat": 10.77617744709596,
-    "lon": 106.66405850959598
+    "lat": 10.777516797298206,
+    "lon": 106.66465761993518
   },
   {
     "city": "HoChiMinh",
     "zone": "HCMC",
     "route_id": "truong_chinh",
     "name": "Trường Chinh (HCMC)",
-    "lat": 10.819743069630011,
-    "lon": 106.6301499815519
+    "lat": 10.817068042134524,
+    "lon": 106.6318617520814
   }
 ]

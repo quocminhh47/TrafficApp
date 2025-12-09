@@ -882,7 +882,17 @@ def render_hcmc_congestion_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
         tooltip=tooltip,
     )
 
-    chart = (area + line + points).properties(
+    labels = base.mark_text(
+        dy=-8,
+        fontSize=11,
+        fontWeight="bold",
+        color="#333333",
+    ).encode(
+        y="ProbCongested:Q",
+        text=alt.Text("ProbCongested:Q", format=".0%"),
+    )
+
+    chart = (area + line + points + labels).properties(
         height=260,
         title="Dự báo xác suất tắc trong 2 giờ tới",
     ).interactive()
@@ -1765,6 +1775,22 @@ def main():
                             st.info("Không có forecast cho ngày này.")
                             continue
 
+                        df_day["DateTime"] = pd.to_datetime(df_day["DateTime"], errors="coerce")
+                        df_day = df_day.dropna(subset=["DateTime"])
+
+                        # Chuẩn hóa về chính xác từng giờ (trong trường hợp có phút lẻ)
+                        df_day["DateTime"] = df_day["DateTime"].dt.floor("H")
+
+                        # Chỉ gộp các cột số (Vehicles, PredictedVehicles, Pred_GRU, Pred_LSTM, ...)
+                        num_cols = df_day.select_dtypes(include="number").columns.tolist()
+                        # nếu có cột không muốn gộp thì bỏ ra khỏi num_cols ở đây
+
+                        df_day = (
+                            df_day.groupby("DateTime", as_index=False)[num_cols]
+                            .mean()
+                            .sort_values("DateTime")
+                        )
+
                         # Cột dùng để phân tích: ưu tiên ensemble
                         metric_col = "PredictedVehicles_Ensemble"
                         if metric_col not in df_day.columns:
@@ -1814,6 +1840,27 @@ def main():
                                 f"{avg_val:,.0f} xe/giờ",
                             )
                         # Bảng ngang
+                        # st.markdown("### 🧮 Lưu lượng xe cộ theo giờ")
+                        #
+                        # # s: Series index = DateTime, value = Vehicles/h (ensemble)
+                        # s_label = s.copy()
+                        # s_label.index = s_label.index.strftime("%H:%M")
+                        # s_label_int = s_label.round(0).astype("Int64")  # convert to int, nullable
+                        #
+                        # # 1 dòng, các cột là giờ
+                        # tbl = s_label_int.to_frame().T
+                        # tbl.index = ["Vehicles/h"]
+                        #
+                        # styled_tbl = (
+                        #     tbl.style
+                        #     .format("{:,.0f}", na_rep="-")  # hiển thị int, có phân cách
+                        #     .background_gradient(axis=1, cmap="YlOrRd")  # thấp = vàng nhạt, cao = đỏ
+                        #     .highlight_max(axis=1, color="#7f0000   ")  # giờ cao điểm nhất tô đỏ hẳn
+                        # )
+                        #
+                        # st.dataframe(styled_tbl, use_container_width=True, height=70)
+                        # st.dataframe(styled_tbl, use_container_width=True, height=140)
+
                         st.markdown("### 🧮 Lưu lượng xe cộ theo giờ")
 
                         # s: Series index = DateTime, value = Vehicles/h (ensemble)
@@ -1821,19 +1868,25 @@ def main():
                         s_label.index = s_label.index.strftime("%H:%M")
                         s_label_int = s_label.round(0).astype("Int64")  # convert to int, nullable
 
+                        # Gộp theo giờ nếu vì lý do gì đó có trùng label (vd nhiều ngày dính chung)
+                        # -> đảm bảo mỗi giờ (cột) chỉ xuất hiện 1 lần
+                        s_hour = s_label_int.groupby(s_label_int.index).mean()
+
                         # 1 dòng, các cột là giờ
-                        tbl = s_label_int.to_frame().T
+                        tbl = s_hour.to_frame().T
                         tbl.index = ["Vehicles/h"]
+
+                        # Phòng trường hợp vẫn còn trùng cột (rất hiếm) -> bỏ bớt bản trùng
+                        tbl = tbl.loc[:, ~tbl.columns.duplicated()]
 
                         styled_tbl = (
                             tbl.style
                             .format("{:,.0f}", na_rep="-")  # hiển thị int, có phân cách
                             .background_gradient(axis=1, cmap="YlOrRd")  # thấp = vàng nhạt, cao = đỏ
-                            .highlight_max(axis=1, color="#7f0000   ")  # giờ cao điểm nhất tô đỏ hẳn
+                            .highlight_max(axis=1, color="#ff4b4b")  # giờ cao điểm nhất tô đỏ hẳn
                         )
 
                         st.dataframe(styled_tbl, use_container_width=True, height=70)
-                        # st.dataframe(styled_tbl, use_container_width=True, height=140)
 
                         # Chú giải màu
                         st.markdown(
@@ -1910,7 +1963,17 @@ def main():
                             tooltip=tooltip_fields,
                         )
 
-                        chart = (line + points).interactive().properties(
+                        labels = base.mark_text(
+                            dy=-8,
+                            fontSize=11,
+                            fontWeight="bold",
+                            color="#333333",
+                        ).encode(
+                            y="PredictedVehicles:Q",
+                            text=alt.Text("PredictedVehicles:Q", format=".0f"),
+                        )
+
+                        chart = (line + points + labels).interactive().properties(
                             height=320,
                             title=f"Dự báo cho {vn_weekday_label(day_start)}",
                         )
@@ -2057,7 +2120,78 @@ def main():
                 df_eval = df_eval.merge(df_sarima, on="Date", how="left")
 
         # ---- Tab ----
-        tab_cmp_daily, tab_cmp_weekly, tab_cmp_monthly = st.tabs(["Daily", "Weekly", "Monthly"])
+        tab_cmp_hourly, tab_cmp_daily, tab_cmp_weekly, tab_cmp_monthly = st.tabs([
+            "Hourly", "Daily", "Weekly", "Monthly"
+        ])
+
+        # -----------------
+        # 7.0 Tab Hourly
+        # -----------------
+        with tab_cmp_hourly:
+            st.subheader("HOURLY – trung bình theo giờ trong 1 tháng gần nhất")
+
+            if df_full.empty:
+                st.info("Không có dữ liệu để tính trung bình theo giờ.")
+            else:
+                max_date = df_full["DateTime"].max()
+                start_dt = max_date - pd.DateOffset(months=1)
+                df_last_month = df_full[df_full["DateTime"] >= start_dt].copy()
+
+                if df_last_month.empty:
+                    st.info("Không có dữ liệu trong 1 tháng gần nhất để hiển thị.")
+                else:
+                    df_last_month["Hour"] = df_last_month["DateTime"].dt.hour
+                    df_hourly = (
+                        df_last_month
+                        .groupby("Hour")["Vehicles"]
+                        .mean()
+                        .reindex(range(24))
+                        .reset_index()
+                        .rename(columns={"Vehicles": "VehiclesPerHour"})
+                    )
+
+                    df_hourly["VehiclesPerHour"] = df_hourly["VehiclesPerHour"].round(2)
+
+                    st.caption(
+                        f"Khoảng dữ liệu: {start_dt.date()} → {max_date.date()}"
+                    )
+
+                    chart_hourly = (
+                        alt.Chart(df_hourly)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("Hour:O", title="Giờ trong ngày"),
+                            y=alt.Y(
+                                "VehiclesPerHour:Q",
+                                title="Lưu lượng trung bình (vehicles/giờ)",
+                            ),
+                            tooltip=[
+                                alt.Tooltip("Hour:O", title="Giờ"),
+                                alt.Tooltip(
+                                    "VehiclesPerHour:Q",
+                                    title="Lưu lượng trung bình",
+                                    format=",.2f",
+                                ),
+                            ],
+                        )
+                        .properties(height=320)
+                    )
+
+                    st.altair_chart(chart_hourly, use_container_width=True)
+
+                    df_table = df_hourly.rename(
+                        columns={
+                            "Hour": "Giờ",
+                            "VehiclesPerHour": "Lưu lượng trung bình",
+                        }
+                    ).copy()
+                    df_table["Giờ"] = df_table["Giờ"].apply(lambda h: f"{h}h")
+                    df_table["Lưu lượng trung bình"] = df_table["Lưu lượng trung bình"].apply(
+                        lambda v: f"{v:,.2f}" if pd.notna(v) else ""
+                    )
+
+                    st.markdown("#### Bảng tổng hợp theo giờ")
+                    st.dataframe(df_table, use_container_width=True)
 
         # -----------------
         # 7.1 Tab Daily
@@ -2105,10 +2239,38 @@ def main():
                         "🔍 Xem thống kê lưu lượng giao thông theo từng ngày  (Actual + Models) trong 3 tháng gần nhất"
                 ):
                     df_show = df_eval.copy()
+                    weekday_map = {
+                        0: "Thứ 2",
+                        1: "Thứ 3",
+                        2: "Thứ 4",
+                        3: "Thứ 5",
+                        4: "Thứ 6",
+                        5: "Thứ 7",
+                        6: "Chủ nhật",
+                    }
+                    if "Date" in df_show.columns:
+                        df_show["Thứ"] = pd.to_datetime(df_show["Date"]).dt.dayofweek.map(
+                            weekday_map
+                        )
+                        cols = df_show.columns.tolist()
+                        thu_idx = cols.index("Thứ")
+                        date_idx = cols.index("Date")
+                        if thu_idx != date_idx + 1:
+                            cols.insert(date_idx + 1, cols.pop(thu_idx))
+                        df_show = df_show[cols]
                     for c in df_show.columns:
                         if c.startswith("Daily"):
                             df_show[c] = df_show[c].round().astype("Int64").apply(lambda x: f"{x:,.0f}")
-                    st.dataframe(df_show.sort_values("Date"), use_container_width=True)
+                    df_show = df_show.sort_values("Date")
+                    if "Thứ" in df_show.columns:
+                        weekend_labels = {"Thứ 7", "Chủ nhật"}
+                        styler = df_show.style.applymap(
+                            lambda v: "font-weight: bold" if v in weekend_labels else "",
+                            subset=pd.IndexSlice[:, ["Thứ"]],
+                        )
+                        st.dataframe(styler, use_container_width=True)
+                    else:
+                        st.dataframe(df_show, use_container_width=True)
             else:
                 st.info("Không có series nào (GRU/RNN/LSTM/ARIMA/SARIMA) để hiển thị.")
 

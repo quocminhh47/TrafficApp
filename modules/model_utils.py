@@ -391,6 +391,49 @@ def forecast_week_after_last_point(route_id, city, zone, ctx, n_days=7, model_ty
     return df_fc_raw, anchor_day_raw
 
 
+# def shift_forecast_to_today(
+#     df_fc_raw,
+#     anchor_day_raw,
+#     target_today=None,
+#     *,
+#     drop_past_hours: bool = True,
+# ):
+#     """
+#     Dịch cột DateTime của forecast sang 'hôm nay' mong muốn.
+#
+#     Ý tưởng mới:
+#     - anchor_day_raw = ngày cuối cùng trong data thật (VD: 2018-10-31).
+#     - Dữ liệu forecast bắt đầu từ anchor_day_raw + 1 ngày (00:00) → map về *hôm nay*.
+#     - target_today = ngày "hôm nay" trên UI (VD: 2025-11-18).
+#     - Sau khi shift:
+#         - anchor_day_raw + 1 → target_today (đầu ngày)
+#         - anchor_day_raw + 2 → target_today + 1, ...
+#     - Nếu drop_past_hours=True: bỏ các mốc thời gian đã qua (chỉ giữ từ hiện tại → 7 ngày tới).
+#     """
+#     if df_fc_raw is None or df_fc_raw.empty:
+#         return df_fc_raw
+#
+#     if target_today is None:
+#         target_today = pd.Timestamp.today().normalize()
+#
+#     if anchor_day_raw is None:
+#         # không biết anchor, thôi không dịch
+#         return df_fc_raw
+#
+#     # Forecast luôn bắt đầu từ ngày sau anchor → map ngày đó về target_today
+#     base_forecast_day = pd.to_datetime(anchor_day_raw).normalize() + pd.Timedelta(days=1)
+#     delta = target_today - base_forecast_day
+#
+#     df_shifted = df_fc_raw.copy()
+#     df_shifted["DateTime"] = pd.to_datetime(df_shifted["DateTime"], errors="coerce")
+#     df_shifted = df_shifted.dropna(subset=["DateTime"])
+#     df_shifted["DateTime"] = df_shifted["DateTime"] + delta
+#
+#     if drop_past_hours:
+#         now_floor = pd.Timestamp.now().floor("H")
+#         df_shifted = df_shifted[df_shifted["DateTime"] >= now_floor]
+#
+#     return df_shifted
 def shift_forecast_to_today(
     df_fc_raw,
     anchor_day_raw,
@@ -399,41 +442,71 @@ def shift_forecast_to_today(
     drop_past_hours: bool = True,
 ):
     """
-    Dịch cột DateTime của forecast sang 'hôm nay' mong muốn.
+    Dịch cột DateTime của forecast sang 'tuần hiện tại' nhưng vẫn giữ pattern theo thứ trong tuần.
 
     Ý tưởng mới:
-    - anchor_day_raw = ngày cuối cùng trong data thật (VD: 2018-10-31).
-    - Dữ liệu forecast bắt đầu từ anchor_day_raw + 1 ngày (00:00) → map về *hôm nay*.
-    - target_today = ngày "hôm nay" trên UI (VD: 2025-11-18).
-    - Sau khi shift:
-        - anchor_day_raw + 1 → target_today (đầu ngày)
-        - anchor_day_raw + 2 → target_today + 1, ...
-    - Nếu drop_past_hours=True: bỏ các mốc thời gian đã qua (chỉ giữ từ hiện tại → 7 ngày tới).
+    - Thay vì cộng chênh lệch ngày tuyệt đối giữa anchor_day_raw và target_today,
+      ta map từng điểm forecast theo weekday (0=Mon..6=Sun).
+    - Mỗi timestamp trong df_fc_raw sẽ được đưa về NGÀY GẦN NHẤT >= target_today
+      có cùng weekday.
+    - Giữ nguyên phần giờ/phút/giây của forecast gốc.
+    - drop_past_hours=True: bỏ các mốc thời gian đã qua so với thời điểm hiện tại.
+
+    Ghi chú:
+    - anchor_day_raw vẫn được giữ trong signature cho tương thích,
+      nhưng logic mới không còn phụ thuộc trực tiếp vào anchor_day_raw.
     """
-    if df_fc_raw is None or df_fc_raw.empty:
+    import pandas as pd
+
+    if df_fc_raw is None or len(df_fc_raw) == 0:
         return df_fc_raw
 
+    # Chuẩn hoá target_today
     if target_today is None:
         target_today = pd.Timestamp.today().normalize()
+    else:
+        target_today = pd.Timestamp(target_today).normalize()
 
-    if anchor_day_raw is None:
-        # không biết anchor, thôi không dịch
-        return df_fc_raw
+    df = df_fc_raw.copy()
+    df["DateTime"] = pd.to_datetime(df["DateTime"], errors="coerce")
+    df = df.dropna(subset=["DateTime"])
+    if df.empty:
+        return df
 
-    # Forecast luôn bắt đầu từ ngày sau anchor → map ngày đó về target_today
-    base_forecast_day = pd.to_datetime(anchor_day_raw).normalize() + pd.Timedelta(days=1)
-    delta = target_today - base_forecast_day
+    # Lấy weekday (0..6) và time trong ngày
+    df["wd"] = df["DateTime"].dt.weekday       # 0=Mon .. 6=Sun
+    df["time"] = df["DateTime"].dt.time
 
-    df_shifted = df_fc_raw.copy()
-    df_shifted["DateTime"] = pd.to_datetime(df_shifted["DateTime"], errors="coerce")
-    df_shifted = df_shifted.dropna(subset=["DateTime"])
-    df_shifted["DateTime"] = df_shifted["DateTime"] + delta
+    base_wd = int(target_today.weekday())
 
+    # Map mỗi weekday -> ngày gần nhất >= target_today có cùng weekday
+    date_map = {}
+    unique_wd = sorted(df["wd"].unique())
+    for wd in unique_wd:
+        # số ngày cần cộng từ target_today để tới đúng weekday wd
+        days_ahead = (int(wd) - base_wd) % 7
+        mapped_date = target_today + pd.Timedelta(days=int(days_ahead))
+        date_map[int(wd)] = mapped_date
+
+    # Ghép lại Date + Time
+    new_datetimes = []
+    for wd, t in zip(df["wd"], df["time"]):
+        mapped_date = date_map[int(wd)]
+        new_dt = pd.Timestamp.combine(mapped_date, t)
+        new_datetimes.append(new_dt)
+
+    df["DateTime"] = new_datetimes
+
+    # Bỏ các mốc đã qua (nếu muốn)
     if drop_past_hours:
         now_floor = pd.Timestamp.now().floor("H")
-        df_shifted = df_shifted[df_shifted["DateTime"] >= now_floor]
+        df = df[df["DateTime"] >= now_floor]
 
-    return df_shifted
+    # Dọn cột phụ
+    df = df.drop(columns=["wd", "time"])
+    df = df.sort_values("DateTime").reset_index(drop=True)
+
+    return df
 
 # -------------------------------------------------
 # LSTM: dùng history LOOKBACK giờ trước base_date
