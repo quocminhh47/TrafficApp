@@ -31,8 +31,10 @@ function setFrameHeight(height) {
 
 // ====================== LEAFLET ======================
 let map = null;
+let linesGroup = null;
 let markersGroup = null;
 let markersById = {};
+let linesById = {};
 let globalBounds = null;
 let resetAdded = false;
 let legendAdded = false;
@@ -47,8 +49,24 @@ function ensureMap() {
       attribution: "© OpenStreetMap contributors",
     }).addTo(map);
 
+    linesGroup = L.featureGroup().addTo(map);
     markersGroup = L.featureGroup().addTo(map);
   }
+}
+
+function getCongestionInfo(p) {
+  const value = Number(p);
+  if (!Number.isFinite(value)) {
+    return { level: "unknown", color: "#6c757d", label: "Unknown", value: null };
+  }
+
+  if (value <= 0.3) {
+    return { level: "low", color: "#2ecc71", label: "Low", value };
+  }
+  if (value <= 0.7) {
+    return { level: "medium", color: "#f1c40f", label: "Medium", value };
+  }
+  return { level: "high", color: "#e74c3c", label: "High", value };
 }
 
 function getIcon(isSelected) {
@@ -129,14 +147,28 @@ function addLegend() {
   legend.onAdd = function () {
     const div = L.DomUtil.create("div", "traffic-legend");
     div.innerHTML = `
-      <div style="background: rgba(255,255,255,0.9); padding:6px 10px; border-radius:8px; font-size:12px; box-shadow: 0 1px 3px rgba(0,0,0,0.25);">
-        <div style="margin-bottom:2px;">
-          <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#ff3333;margin-right:4px;border:1px solid #fff;"></span>
-          Tuyến đang chọn
+      <div style="background: rgba(255,255,255,0.92); padding:8px 10px; border-radius:8px; font-size:12px; box-shadow: 0 1px 3px rgba(0,0,0,0.25);">
+        <div style="font-weight:600; margin-bottom:4px;">Tuyến đường</div>
+        <div style="margin-bottom:4px; display:flex; align-items:center; gap:6px;">
+          <span style="display:inline-block;width:20px;height:4px;background:#2ecc71;border-radius:2px;"></span>
+          <span>Low (p ≤ 0.3)</span>
         </div>
-        <div>
-          <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#3388ff;margin-right:4px;border:1px solid #fff;"></span>
-          Tuyến khác
+        <div style="margin-bottom:4px; display:flex; align-items:center; gap:6px;">
+          <span style="display:inline-block;width:20px;height:4px;background:#f1c40f;border-radius:2px;"></span>
+          <span>Medium (0.3 < p ≤ 0.7)</span>
+        </div>
+        <div style="margin-bottom:8px; display:flex; align-items:center; gap:6px;">
+          <span style="display:inline-block;width:20px;height:4px;background:#e74c3c;border-radius:2px;"></span>
+          <span>High (p > 0.7)</span>
+        </div>
+        <div style="font-weight:600; margin-bottom:4px;">Marker</div>
+        <div style="display:flex; align-items:center; gap:6px; margin-bottom:2px;">
+          <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#ff3333;border:1px solid #fff;"></span>
+          <span>Đang chọn</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#3388ff;border:1px solid #fff;"></span>
+          <span>Khác</span>
         </div>
       </div>
     `;
@@ -145,6 +177,119 @@ function addLegend() {
 
   legend.addTo(map);
   legendAdded = true;
+}
+
+function getLineStyle(color, isSelected) {
+  return {
+    color,
+    weight: isSelected ? 7 : 5,
+    opacity: 0.9,
+    lineCap: "round",
+  };
+}
+
+function coordsToLatLngs(coords) {
+  if (!Array.isArray(coords)) return [];
+  return coords
+    .map((pair) => {
+      if (!Array.isArray(pair) || pair.length < 2) return null;
+      const [lon, lat] = pair;
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+      return [lat, lon];
+    })
+    .filter(Boolean);
+}
+
+function parseGeojson(data) {
+  if (!data) return null;
+  let obj = data;
+  if (typeof data === "string") {
+    try {
+      obj = JSON.parse(data);
+    } catch (err) {
+      console.error("Invalid GeoJSON string", err);
+      return null;
+    }
+  }
+
+  if (!obj || typeof obj !== "object") return null;
+  if (obj.type === "FeatureCollection" && Array.isArray(obj.features)) {
+    return obj.features;
+  }
+  if (obj.type === "Feature") {
+    return [obj];
+  }
+  if (Array.isArray(obj.features)) {
+    return obj.features;
+  }
+  return null;
+}
+
+function applySelection(routeId) {
+  Object.entries(markersById).forEach(([rid, marker]) => {
+    marker.setIcon(getIcon(rid === routeId));
+  });
+
+  Object.entries(linesById).forEach(([rid, info]) => {
+    const isSelected = rid === routeId;
+    info.layer.setStyle(getLineStyle(info.color, isSelected));
+  });
+}
+
+function updateLines(routeLinesGeojson, routeCongestion, selectedRouteId) {
+  ensureMap();
+
+  if (!linesGroup) return;
+  linesGroup.clearLayers();
+  linesById = {};
+
+  const features = parseGeojson(routeLinesGeojson);
+  if (!features || features.length === 0) return;
+
+  features.forEach((feat) => {
+    const geometry = feat.geometry || {};
+    const props = feat.properties || {};
+    const routeId = props.route_id || props.routeId;
+    if (!routeId || !geometry.coordinates) return;
+
+    let latlngs = [];
+    if (geometry.type === "LineString") {
+      latlngs = coordsToLatLngs(geometry.coordinates);
+    } else if (geometry.type === "MultiLineString") {
+      latlngs = geometry.coordinates
+        .map((line) => coordsToLatLngs(line))
+        .filter((arr) => arr.length > 0);
+    }
+
+    if (!latlngs || latlngs.length === 0) return;
+
+    const congestionInfo = getCongestionInfo(
+      routeCongestion ? routeCongestion[routeId] : null
+    );
+    const isSelected = routeId === selectedRouteId;
+
+    const polyline = L.polyline(latlngs, getLineStyle(congestionInfo.color, isSelected)).addTo(linesGroup);
+
+    const name = props.name || routeId;
+    const percent = congestionInfo.value != null
+      ? `${(congestionInfo.value * 100).toFixed(0)}%`
+      : "N/A";
+    const tooltipContent = `
+      <div><b>${name}</b></div>
+      <div><b>Route:</b> ${routeId}</div>
+      <div><b>Level:</b> ${congestionInfo.label}</div>
+      <div><b>p_cong:</b> ${percent}</div>
+    `;
+    polyline.bindTooltip(tooltipContent, { sticky: true, className: "custom-tooltip" });
+
+    polyline.on("click", () => {
+      sendValue(routeId);
+      applySelection(routeId);
+      map.fitBounds(polyline.getBounds(), { padding: [60, 60] });
+    });
+
+    linesById[routeId] = { layer: polyline, color: congestionInfo.color };
+  });
 }
 
 
@@ -161,6 +306,10 @@ function updateMarkers(routesData, selectedRouteId, allRoutes) {
 
   // Global bounds tính trên toàn bộ marker
   globalBounds = computeBounds(list);
+  if (linesGroup && linesGroup.getLayers().length > 0) {
+    const lineBounds = linesGroup.getBounds();
+    globalBounds = globalBounds ? globalBounds.extend(lineBounds) : lineBounds;
+  }
 
   list.forEach((r) => {
     const lat = Number(r.lat);
@@ -190,11 +339,7 @@ function updateMarkers(routesData, selectedRouteId, allRoutes) {
       // gửi route_id về Python
       sendValue(routeId);
 
-      // highlight marker được chọn
-      Object.entries(markersById).forEach(([rid, m]) => {
-        const sel = rid === routeId;
-        m.setIcon(getIcon(sel));
-      });
+      applySelection(routeId);
 
       map.setView([lat, lon], 15);
     });
@@ -202,6 +347,8 @@ function updateMarkers(routesData, selectedRouteId, allRoutes) {
     marker.addTo(markersGroup);
     markersById[routeId] = marker;
   });
+
+  applySelection(selectedRouteId);
 
   // Điều khiển view
   if (selectedRouteId && markersById[selectedRouteId]) {
@@ -241,7 +388,7 @@ function createMarker(lat, lon, isSelected, routeId, name) {
 
   marker.bindTooltip(name, {direction: "top", offset: [0, -8]});
   marker.on("click", () => {
-    Streamlit.setComponentValue(routeId);
+    sendValue(routeId);
   });
 
   return marker;
@@ -252,7 +399,10 @@ function handleRender(args) {
   const routesData = args.data || [];
   const selectedRouteId = args.selected_route_id || null;
   const allRoutes = args.all_routes || [];
+  const routeLinesGeojson = args.route_lines_geojson || null;
+  const routeCongestion = args.route_congestion || null;
 
+  updateLines(routeLinesGeojson, routeCongestion, selectedRouteId);
   updateMarkers(routesData, selectedRouteId, allRoutes);
 
   const h =
