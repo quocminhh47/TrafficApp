@@ -76,11 +76,7 @@ def build_forecast_cache(city, zone, route_id, file_name):
     # 2. Load forecast cache nếu có
     if EXT_PATH.exists():
         df_ext = pd.read_parquet(EXT_PATH)
-        df_ext = df_ext[
-            (df_ext["City"] == city) &
-            (df_ext["RouteId"] == route_id)
-        ]
-
+        df_ext = df_ext[(df_ext["RouteId"] == route_id)]
 
         hist = pd.concat([df_real, df_ext], ignore_index=True)
     else:
