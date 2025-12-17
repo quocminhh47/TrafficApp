@@ -39,6 +39,8 @@ let globalBounds = null;
 let resetAdded = false;
 let legendAdded = false;
 let firstRender = true;
+let routesPaneCreated = false;
+let routeRenderer = null;
 
 function ensureMap() {
   if (!map) {
@@ -48,6 +50,12 @@ function ensureMap() {
       maxZoom: 19,
       attribution: "© OpenStreetMap contributors",
     }).addTo(map);
+
+    // Pane riêng cho tuyến đường để không che nhãn nền
+    map.createPane("routes");
+    map.getPane("routes").style.zIndex = 400;
+    routesPaneCreated = true;
+    routeRenderer = L.canvas({ padding: 0.5 });
 
     linesGroup = L.featureGroup().addTo(map);
     markersGroup = L.featureGroup().addTo(map);
@@ -182,9 +190,12 @@ function addLegend() {
 function getLineStyle(color, isSelected) {
   return {
     color,
-    weight: isSelected ? 7 : 5,
-    opacity: 0.9,
+    weight: isSelected ? 7 : 4,
+    opacity: 0.85,
     lineCap: "round",
+    lineJoin: "round",
+    pane: routesPaneCreated ? "routes" : undefined,
+    renderer: routeRenderer || undefined,
   };
 }
 
@@ -233,6 +244,9 @@ function applySelection(routeId) {
   Object.entries(linesById).forEach(([rid, info]) => {
     const isSelected = rid === routeId;
     info.layer.setStyle(getLineStyle(info.color, isSelected));
+    if (isSelected && info.layer.bringToFront) {
+      info.layer.bringToFront();
+    }
   });
 }
 
@@ -252,43 +266,45 @@ function updateLines(routeLinesGeojson, routeCongestion, selectedRouteId) {
     const routeId = props.route_id || props.routeId;
     if (!routeId || !geometry.coordinates) return;
 
-    let latlngs = [];
-    if (geometry.type === "LineString") {
-      latlngs = coordsToLatLngs(geometry.coordinates);
-    } else if (geometry.type === "MultiLineString") {
-      latlngs = geometry.coordinates
-        .map((line) => coordsToLatLngs(line))
-        .filter((arr) => arr.length > 0);
-    }
-
-    if (!latlngs || latlngs.length === 0) return;
-
     const congestionInfo = getCongestionInfo(
       routeCongestion ? routeCongestion[routeId] : null
     );
     const isSelected = routeId === selectedRouteId;
 
-    const polyline = L.polyline(latlngs, getLineStyle(congestionInfo.color, isSelected)).addTo(linesGroup);
+    const featureLayer = L.geoJSON(feat, {
+      coordsToLatLng: ([lon, lat]) => L.latLng(lat, lon),
+      style: () => getLineStyle(congestionInfo.color, isSelected),
+      pane: routesPaneCreated ? "routes" : undefined,
+      renderer: routeRenderer || undefined,
+      onEachFeature: (_, layer) => {
+        const name = props.name || routeId;
+        const percent = congestionInfo.value != null
+          ? `${(congestionInfo.value * 100).toFixed(0)}%`
+          : "N/A";
+        const tooltipContent = `
+          <div><b>${name}</b></div>
+          <div><b>Route:</b> ${routeId}</div>
+          <div><b>Level:</b> ${congestionInfo.label}</div>
+          <div><b>p_cong:</b> ${percent}</div>
+        `;
+        layer.bindTooltip(tooltipContent, { sticky: true, className: "custom-tooltip" });
 
-    const name = props.name || routeId;
-    const percent = congestionInfo.value != null
-      ? `${(congestionInfo.value * 100).toFixed(0)}%`
-      : "N/A";
-    const tooltipContent = `
-      <div><b>${name}</b></div>
-      <div><b>Route:</b> ${routeId}</div>
-      <div><b>Level:</b> ${congestionInfo.label}</div>
-      <div><b>p_cong:</b> ${percent}</div>
-    `;
-    polyline.bindTooltip(tooltipContent, { sticky: true, className: "custom-tooltip" });
-
-    polyline.on("click", () => {
-      sendValue(routeId);
-      applySelection(routeId);
-      map.fitBounds(polyline.getBounds(), { padding: [60, 60] });
+        layer.on("click", () => {
+          sendValue(routeId);
+          applySelection(routeId);
+          const bounds = layer.getBounds();
+          if (bounds && bounds.isValid && bounds.isValid()) {
+            map.fitBounds(bounds, { padding: [60, 60] });
+          }
+          if (layer.bringToFront) {
+            layer.bringToFront();
+          }
+        });
+      },
     });
 
-    linesById[routeId] = { layer: polyline, color: congestionInfo.color };
+    featureLayer.addTo(linesGroup);
+    linesById[routeId] = { layer: featureLayer, color: congestionInfo.color };
   });
 }
 
