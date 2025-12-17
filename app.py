@@ -1735,13 +1735,14 @@ def main():
         if df_fc_raw is None or df_fc_raw.empty:
             st.warning("Không forecast được (thiếu dữ liệu history).")
         else:
-            target_today = pd.Timestamp.today().normalize()
-            df_fc = shift_forecast_to_today(
-                df_fc_raw,
-                anchor_day_raw,
-                target_today=target_today,
-                drop_past_hours=True,
-            )
+            #target_today = pd.Timestamp.today().normalize()
+            #df_fc = shift_forecast_to_today(
+            #    df_fc_raw,
+            #    anchor_day_raw,
+            #    target_today=target_today,
+            #    drop_past_hours=True,
+            #)
+            df_fc = df_fc_raw.copy()
 
             if df_fc is None or df_fc.empty:
                 st.warning("Không có forecast hợp lệ sau khi dịch về hôm nay.")
@@ -2593,6 +2594,7 @@ def main():
                     " → " +
                     df_monthly["MonthEnd"].dt.strftime("%Y-%m-%d")
             )
+
 
             # ==== Chart multi-line Monthly (Actual + Models) ====
             st.subheader("MONTHLY (Actual + Models) – 3 tháng gần nhất")
