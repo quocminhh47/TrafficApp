@@ -13,6 +13,11 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 from modules.data_loader import load_slice, list_cities, list_zones, list_routes
 from modules.geo_routes import load_routes_geo
+from modules.ward_report import (
+    compute_ward_next_2h_report,
+    get_wards,
+    load_routes_with_ward,
+)
 from map_component import map_routes  # custom map component
 
 from modules.model_utils import (
@@ -1450,7 +1455,7 @@ def main():
     else:
         if city == "HoChiMinh":
             # HCMC: lấy route từ routes_geo, hiển thị name, value = route_id
-            routes_geo_all_sidebar = load_routes_geo().fillna("")
+            routes_geo_all_sidebar = load_routes_with_ward().fillna("")
             df_geo_city_sb = routes_geo_all_sidebar[
                 routes_geo_all_sidebar["city"] == "HoChiMinh"
             ].copy()
@@ -1548,9 +1553,17 @@ def main():
     # ====================================
     st.subheader("Bản đồ các tuyến đường")
 
-    routes_geo_all = load_routes_geo().fillna("")
+    routes_geo_all = load_routes_with_ward().fillna("")
+
+    ward_filter = (
+        st.session_state.get("ward_filter")
+        if city == "HoChiMinh"
+        else None
+    )
 
     df_geo_city = routes_geo_all[routes_geo_all["city"] == city].copy()
+    if ward_filter:
+        df_geo_city = df_geo_city[df_geo_city["ward"] == ward_filter]
     routes_data = df_geo_city.to_dict("records")
     df_all_geo = routes_geo_all.dropna(subset=["lat", "lon"]).copy()
     all_routes_list = df_all_geo.to_dict("records")
@@ -1593,25 +1606,105 @@ def main():
     else:
         st.write("**Chưa chọn tuyến nào**")
 
+    if city == "HoChiMinh":
+        ward_tab, route_tab = st.tabs(
+            ["📍 Report by Ward (2h tới)", "🚦 Dự báo theo tuyến"]
+        )
+
+        with ward_tab:
+            st.markdown("### 📍 Report by Ward (2h tới)")
+            wards = get_wards(routes_geo_all)
+            ward_placeholder = "Chọn phường..."
+            current_ward = st.session_state.get("ward_filter", ward_placeholder)
+            if current_ward not in wards:
+                current_ward = ward_placeholder
+            ward_options = [ward_placeholder] + wards
+            default_idx = ward_options.index(
+                current_ward if current_ward in ward_options else ward_placeholder
+            )
+
+            selected_ward = st.selectbox(
+                "Chọn phường",
+                ward_options,
+                index=default_idx,
+                key="ward_select",
+                help="Chọn phường để xem báo cáo tắc đường 2 giờ tới.",
+            )
+
+            if selected_ward == ward_placeholder:
+                st.session_state["ward_filter"] = None
+                st.info("Chọn phường để xem báo cáo 2 giờ tới.")
+            else:
+                st.session_state["ward_filter"] = selected_ward
+                now_ts = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh")
+                df_high, df_low, suggestions, _p_peak_map = compute_ward_next_2h_report(
+                    selected_ward, now_ts
+                )
+
+                if df_high.empty and df_low.empty:
+                    st.warning("Không lấy được dự báo cho các tuyến thuộc phường này.")
+                else:
+                    if not df_high.empty:
+                        st.markdown("#### Tuyến có khả năng kẹt (2h tới)")
+                        display_high = pd.DataFrame(
+                            {
+                                "Tuyến": df_high["route_name"],
+                                "route_id": df_high["route_id"],
+                                "p_peak (%)": df_high["p_peak_pct"].round(1),
+                                "level": df_high["level"],
+                                "t_peak": df_high["t_peak_label"],
+                                "p_mean (%)": df_high["p_mean_pct"].round(1),
+                            }
+                        )
+                        st.dataframe(display_high, hide_index=True, use_container_width=True)
+                    else:
+                        st.info("Không có tuyến nguy cơ kẹt trong 2 giờ tới.")
+
+                    if not df_low.empty:
+                        st.markdown("#### Tuyến thông thoáng (2h tới)")
+                        display_low = pd.DataFrame(
+                            {
+                                "Tuyến": df_low["route_name"],
+                                "route_id": df_low["route_id"],
+                                "p_peak (%)": df_low["p_peak_pct"].round(1),
+                                "p_mean (%)": df_low["p_mean_pct"].round(1),
+                            }
+                        )
+                        st.dataframe(display_low, hide_index=True, use_container_width=True)
+                    else:
+                        st.info("Không có tuyến mức độ thấp trong 2 giờ tới.")
+
+                    st.markdown("#### Gợi ý lộ trình")
+                    if suggestions.get("avoid"):
+                        st.write("**Nên tránh:** " + ", ".join(suggestions["avoid"]))
+                    else:
+                        st.write("**Nên tránh:** Không có tuyến nguy cơ cao.")
+
+                    if suggestions.get("prefer"):
+                        st.write("**Nên ưu tiên:** " + ", ".join(suggestions["prefer"]))
+                    else:
+                        st.write("**Nên ưu tiên:** Chưa có tuyến thật sự thoáng.")
+
+        with route_tab:
+            if not route_id:
+                st.info(
+                    "👆 Hãy chọn một tuyến ở sidebar hoặc click vào marker trên bản đồ để xem forecast chi tiết."
+                )
+            else:
+                render_hcmc_congestion_next_2h(route_id, routes_geo_all)
+
+                st.markdown("---")
+
+                render_hcmc_departure_advisor(route_id, routes_geo_all)
+                render_hcmc_weekly_pattern(route_id, routes_geo_all)
+                st.markdown("---")
+                render_hcmc_eval_summary_for_route(route_id)
+        return
+
 
     # nếu chưa có route thì chỉ show map, không load data/model
     if not route_id:
         st.info("👆 Hãy chọn một tuyến ở sidebar hoặc click vào marker trên bản đồ để xem forecast chi tiết.")
-        return
-
-    # HCMC: dùng GRU congestion riêng, không dùng pipeline Vehicles/h như I-94/Fremont
-    if city == "HoChiMinh":
-        # 1) Dự báo 2 giờ tới cho tuyến đang chọn
-        render_hcmc_congestion_next_2h(route_id, routes_geo_all)
-
-        st.markdown("---")
-
-        # 2) Trợ lý chọn giờ đi đường (dựa trên lịch sử)
-        render_hcmc_departure_advisor(route_id, routes_geo_all)
-        # 3) Heatmap mẫu hình cả tuần
-        render_hcmc_weekly_pattern(route_id, routes_geo_all)
-        st.markdown("---")
-        render_hcmc_eval_summary_for_route(route_id)
         return
 
     # ====================================
