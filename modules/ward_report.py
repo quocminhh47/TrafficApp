@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Iterable, Tuple
+
 import pandas as pd
 import streamlit as st
 
@@ -13,33 +14,42 @@ LOW_THRESHOLD = 0.3
 HIGH_THRESHOLD = 0.7
 
 
-def load_routes_with_ward() -> pd.DataFrame:
+def load_routes_with_district() -> pd.DataFrame:
     """
-    Đọc routes_geo và đảm bảo luôn có cột ward.
+    Đọc routes_geo và đảm bảo luôn có cột district.
     """
     df = load_routes_geo().copy()
-    if "ward" not in df.columns:
-        df["ward"] = None
+    if "district" not in df.columns:
+        df["district"] = None
     return df
+
+
+def _flatten_districts(values: Iterable[Any]) -> list[str]:
+    out: list[str] = []
+    for v in values:
+        if isinstance(v, (list, tuple, set)):
+            for item in v:
+                s = str(item).strip()
+                if s:
+                    out.append(s)
+        else:
+            s = str(v).strip()
+            if s:
+                out.append(s)
+    return out
 
 
 def get_wards(df_routes: pd.DataFrame | None = None) -> list[str]:
     """
-    Lấy danh sách phường của HCMC có trong routes_geo.
+    Lấy danh sách quận/huyện của HCMC có trong routes_geo (dựa vào cột district).
     """
-    df = df_routes if df_routes is not None else load_routes_with_ward()
+    df = df_routes if df_routes is not None else load_routes_with_district()
 
-    if df is None or df.empty or "ward" not in df.columns:
+    if df is None or df.empty or "district" not in df.columns:
         return []
 
-    wards = (
-        df[df["city"] == HCMC_CITY]["ward"]
-        .dropna()
-        .astype(str)
-        .str.strip()
-    )
-
-    wards = [w for w in wards if w]
+    districts_col = df[df["city"] == HCMC_CITY]["district"].dropna().tolist()
+    wards = _flatten_districts(districts_col)
     return sorted(set(wards))
 
 
@@ -82,11 +92,13 @@ def _compute_ward_next_2h_report_cached(
     """
     _ = anchor_iso  # dùng để tạo cache key ổn định theo thời gian
 
-    routes_geo = load_routes_with_ward()
-    df_geo = routes_geo[
-        (routes_geo["city"] == HCMC_CITY)
-        & (routes_geo["ward"] == ward)
-    ].copy()
+    routes_geo = load_routes_with_district()
+    df_geo = routes_geo[routes_geo["city"] == HCMC_CITY].copy()
+    df_geo = df_geo[
+        df_geo["district"].apply(
+            lambda d: ward in _flatten_districts([d] if not isinstance(d, (list, tuple, set)) else d)
+        )
+    ]
 
     if df_geo.empty:
         empty = pd.DataFrame(
@@ -182,7 +194,7 @@ def compute_ward_next_2h_report(
     ward: str, now_ts: pd.Timestamp
 ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, list[str]], Dict[str, float]]:
     """
-    Tính báo cáo 2h tới cho một phường:
+    Tính báo cáo 2h tới cho một quận/huyện:
     - df_high: các tuyến nguy cơ kẹt (high/medium)
     - df_low: các tuyến thoáng (low)
     - suggestions: {avoid, prefer}

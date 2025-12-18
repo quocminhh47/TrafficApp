@@ -9,11 +9,11 @@ def load_routes_geo() -> pd.DataFrame:
     """
     Đọc toàn bộ metadata toạ độ cho các route.
     Trả về DataFrame với các cột:
-      city, zone, route_id, name, ward, lat, lon
+      city, zone, route_id, name, district, lat, lon
     """
     if not ROUTES_GEO_PATH.exists():
         return pd.DataFrame(
-            columns=["city", "zone", "route_id", "name", "ward", "lat", "lon"]
+            columns=["city", "zone", "route_id", "name", "district", "lat", "lon"]
         )
 
     with open(ROUTES_GEO_PATH, "r", encoding="utf-8") as f:
@@ -21,7 +21,7 @@ def load_routes_geo() -> pd.DataFrame:
 
     df = pd.DataFrame(data)
     # đảm bảo đủ cột
-    for col in ["city", "zone", "route_id", "name", "ward", "lat", "lon"]:
+    for col in ["city", "zone", "route_id", "name", "district", "lat", "lon"]:
         if col not in df.columns:
             df[col] = None
     return df

@@ -16,7 +16,7 @@ from modules.geo_routes import load_routes_geo
 from modules.ward_report import (
     compute_ward_next_2h_report,
     get_wards,
-    load_routes_with_ward,
+    load_routes_with_district,
 )
 from map_component import map_routes  # custom map component
 
@@ -1455,7 +1455,7 @@ def main():
     else:
         if city == "HoChiMinh":
             # HCMC: lấy route từ routes_geo, hiển thị name, value = route_id
-            routes_geo_all_sidebar = load_routes_with_ward().fillna("")
+            routes_geo_all_sidebar = load_routes_with_district().fillna("")
             df_geo_city_sb = routes_geo_all_sidebar[
                 routes_geo_all_sidebar["city"] == "HoChiMinh"
             ].copy()
@@ -1553,17 +1553,30 @@ def main():
     # ====================================
     st.subheader("Bản đồ các tuyến đường")
 
-    routes_geo_all = load_routes_with_ward().fillna("")
+    routes_geo_all = load_routes_with_district().fillna("")
 
-    ward_filter = (
-        st.session_state.get("ward_filter")
+    district_filter = (
+        st.session_state.get("district_filter")
         if city == "HoChiMinh"
         else None
     )
 
     df_geo_city = routes_geo_all[routes_geo_all["city"] == city].copy()
-    if ward_filter:
-        df_geo_city = df_geo_city[df_geo_city["ward"] == ward_filter]
+    if district_filter:
+        df_geo_city = df_geo_city[
+            df_geo_city["district"].apply(
+                lambda d: district_filter
+                in [
+                    str(x).strip()
+                    for x in (
+                        d
+                        if isinstance(d, (list, tuple, set))
+                        else [d]
+                    )
+                    if str(x).strip()
+                ]
+            )
+        ]
     routes_data = df_geo_city.to_dict("records")
     df_all_geo = routes_geo_all.dropna(subset=["lat", "lon"]).copy()
     all_routes_list = df_all_geo.to_dict("records")
@@ -1608,14 +1621,14 @@ def main():
 
     if city == "HoChiMinh":
         ward_tab, route_tab = st.tabs(
-            ["📍 Report by Ward (2h tới)", "🚦 Dự báo theo tuyến"]
+            ["📍 Report by District (2h tới)", "🚦 Dự báo theo tuyến"]
         )
 
         with ward_tab:
-            st.markdown("### 📍 Report by Ward (2h tới)")
+            st.markdown("### 📍 Report by District (2h tới)")
             wards = get_wards(routes_geo_all)
-            ward_placeholder = "Chọn phường..."
-            current_ward = st.session_state.get("ward_filter", ward_placeholder)
+            ward_placeholder = "Chọn quận/huyện..."
+            current_ward = st.session_state.get("district_filter", ward_placeholder)
             if current_ward not in wards:
                 current_ward = ward_placeholder
             ward_options = [ward_placeholder] + wards
@@ -1624,25 +1637,25 @@ def main():
             )
 
             selected_ward = st.selectbox(
-                "Chọn phường",
+                "Chọn quận/huyện",
                 ward_options,
                 index=default_idx,
-                key="ward_select",
-                help="Chọn phường để xem báo cáo tắc đường 2 giờ tới.",
+                key="district_select",
+                help="Chọn quận/huyện để xem báo cáo tắc đường 2 giờ tới.",
             )
 
             if selected_ward == ward_placeholder:
-                st.session_state["ward_filter"] = None
-                st.info("Chọn phường để xem báo cáo 2 giờ tới.")
+                st.session_state["district_filter"] = None
+                st.info("Chọn quận/huyện để xem báo cáo 2 giờ tới.")
             else:
-                st.session_state["ward_filter"] = selected_ward
+                st.session_state["district_filter"] = selected_ward
                 now_ts = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh")
                 df_high, df_low, suggestions, _p_peak_map = compute_ward_next_2h_report(
                     selected_ward, now_ts
                 )
 
                 if df_high.empty and df_low.empty:
-                    st.warning("Không lấy được dự báo cho các tuyến thuộc phường này.")
+                    st.warning("Không lấy được dự báo cho các tuyến thuộc quận/huyện này.")
                 else:
                     if not df_high.empty:
                         st.markdown("#### Tuyến có khả năng kẹt (2h tới)")
