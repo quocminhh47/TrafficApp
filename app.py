@@ -1631,7 +1631,20 @@ def main():
             current_ward = st.session_state.get("district_filter", ward_placeholder)
             if current_ward not in wards:
                 current_ward = ward_placeholder
-            ward_options = [ward_placeholder] + wards
+
+            search_kw = st.text_input(
+                "Tìm quận/huyện",
+                value="",
+                key="district_search_kw",
+                placeholder="Nhập tên quận/huyện để lọc...",
+            ).strip()
+            wards_filtered = (
+                [w for w in wards if search_kw.lower() in w.lower()]
+                if search_kw
+                else wards
+            )
+
+            ward_options = [ward_placeholder] + wards_filtered
             default_idx = ward_options.index(
                 current_ward if current_ward in ward_options else ward_placeholder
             )

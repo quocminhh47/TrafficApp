@@ -151,18 +151,17 @@ function addLegend() {
 function updateMarkers(routesData, selectedRouteId, allRoutes) {
   ensureMap();
 
-  // Luôn vẽ marker cho TẤT CẢ các route (nhiều city)
-  const list = (allRoutes && allRoutes.length > 0)
-    ? allRoutes
-    : (routesData || []);
+  const routesList = routesData || [];
+  const allList = (allRoutes && allRoutes.length > 0) ? allRoutes : routesList;
 
   markersGroup.clearLayers();
   markersById = {};
 
   // Global bounds tính trên toàn bộ marker
-  globalBounds = computeBounds(list);
+  globalBounds = computeBounds(allList);
+  const cityBounds = computeBounds(routesList);
 
-  list.forEach((r) => {
+  allList.forEach((r) => {
     const lat = Number(r.lat);
     const lon = Number(r.lon);
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
@@ -209,15 +208,13 @@ function updateMarkers(routesData, selectedRouteId, allRoutes) {
     const latlng = markersById[selectedRouteId].getLatLng();
     map.setView(latlng, 15);
     firstRender = false;
-  } else if (firstRender) {
-    // Lần đầu chưa có route → overview tất cả
-    if (globalBounds) {
-      map.fitBounds(globalBounds, { padding: [80, 80] });
-    }
+  } else if (cityBounds) {
+    // Ưu tiên zoom theo các route của city đang hiển thị
+    map.fitBounds(cityBounds, { padding: [80, 80] });
     firstRender = false;
   } else if (globalBounds) {
-    // Fallback: overview
     map.fitBounds(globalBounds, { padding: [80, 80] });
+    firstRender = false;
   }
 
 
