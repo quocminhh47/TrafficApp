@@ -12,12 +12,7 @@ from functools import lru_cache
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 from modules.data_loader import load_slice, list_cities, list_zones, list_routes
-from modules.geo_routes import load_hcmc_district_centers, load_routes_geo
-from modules.ward_report import (
-    compute_ward_next_2h_report,
-    get_wards,
-    load_routes_with_district,
-)
+from modules.geo_routes import load_routes_geo
 from map_component import map_routes  # custom map component
 
 from modules.model_utils import (
@@ -1324,7 +1319,7 @@ def main():
     else:
         zones = list_zones(current_city)
 
-        # Trường hợp city không có zone (ví dụ HoChiMinh trước đây)
+        # Trường hợp city không có zone (ví dụ HoChiMinh)
         if not zones:
             st.sidebar.selectbox(
                 "Zone",
@@ -1357,31 +1352,9 @@ def main():
                 disabled=False,
             )
             current_zone = zone
-
     # alias cho phần còn lại của code
     city = current_city
     zone = current_zone
-
-    # Chế độ hiển thị riêng cho HCMC (tách phần Report by District ra sidebar)
-    if city == "HoChiMinh":
-        view_mode_options = ["🚦 Dự báo theo tuyến", "📍 Report by District (2h tới)"]
-        current_view_mode = st.session_state.get("hcmc_view_mode", view_mode_options[0])
-        if current_view_mode not in view_mode_options:
-            current_view_mode = view_mode_options[0]
-        st.session_state["hcmc_view_mode"] = st.sidebar.radio(
-            "Chế độ hiển thị (HCMC)",
-            view_mode_options,
-            index=view_mode_options.index(current_view_mode),
-            key="hcmc_view_mode",
-        )
-    else:
-        st.session_state["hcmc_view_mode"] = "🚦 Dự báo theo tuyến"
-
-    if city == "HoChiMinh":
-        if zone in (None, "(All)"):
-            st.session_state["district_filter"] = None
-        else:
-            st.session_state["district_filter"] = zone
 
     # ====================================
     # 2) LOAD MODEL CONTEXT (FALLBACK zone='(All)')
@@ -1465,15 +1438,6 @@ def main():
     # luôn khai báo raw_routes, kể cả khi chưa chọn city
     raw_routes = []
 
-    def _district_matches(value, target_norm: str | None) -> bool:
-        if not target_norm:
-            return True
-        vals = value if isinstance(value, (list, tuple, set)) else [value]
-        for v in vals:
-            if str(v).strip().lower() == target_norm:
-                return True
-        return False
-
     if not has_city:
         # Chưa chọn city → disable route
         route_selected = st.sidebar.selectbox(
@@ -1484,28 +1448,12 @@ def main():
         )
         route_id = None
     else:
-        district_filter = (
-            st.session_state.get("district_filter")
-            if city == "HoChiMinh"
-            else None
-        )
-        district_filter_norm = (
-            str(district_filter).strip().lower() if district_filter else None
-        )
-
         if city == "HoChiMinh":
             # HCMC: lấy route từ routes_geo, hiển thị name, value = route_id
-            routes_geo_all_sidebar = load_routes_with_district().fillna("")
+            routes_geo_all_sidebar = load_routes_geo().fillna("")
             df_geo_city_sb = routes_geo_all_sidebar[
                 routes_geo_all_sidebar["city"] == "HoChiMinh"
             ].copy()
-
-            if district_filter_norm:
-                df_geo_city_sb = df_geo_city_sb[
-                    df_geo_city_sb["district"].apply(
-                        lambda d: _district_matches(d, district_filter_norm)
-                    )
-                ]
 
             if df_geo_city_sb.empty:
                 st.error("Không tìm thấy tuyến HCMC nào trong routes_geo.")
@@ -1593,63 +1541,18 @@ def main():
         pass
 
     # ----- OPTIONS -----
-    tab = st.sidebar.radio("Options", ["FORECAST", "METRICS AND EVALUATION"])
+    tab = st.sidebar.radio(
+        "Options", ["FORECAST", "METRICS AND EVALUATION", "Roadmap Assistant"]
+    )
 
     # ====================================
     # 5) MAP COMPONENT
     # ====================================
     st.subheader("Bản đồ các tuyến đường")
 
-    routes_geo_all = load_routes_with_district().fillna("")
-
-    district_filter = (
-        st.session_state.get("district_filter")
-        if city == "HoChiMinh"
-        else None
-    )
-    district_filter_norm = (
-        str(district_filter).strip().lower() if district_filter else None
-    )
+    routes_geo_all = load_routes_geo().fillna("")
 
     df_geo_city = routes_geo_all[routes_geo_all["city"] == city].copy()
-    if district_filter_norm:
-        df_geo_city = df_geo_city[
-            df_geo_city["district"].apply(
-                lambda d: _district_matches(d, district_filter_norm)
-            )
-        ]
-    focus_bounds = None
-    if city == "HoChiMinh" and district_filter_norm:
-        centers_df = load_hcmc_district_centers()
-        centers_df["_norm"] = centers_df["district"].astype(str).str.strip().str.lower()
-        center_row = centers_df[centers_df["_norm"] == district_filter_norm]
-        if not center_row.empty:
-            lat_center = pd.to_numeric(center_row.iloc[0]["district_lat"], errors="coerce")
-            lon_center = pd.to_numeric(center_row.iloc[0]["district_lon"], errors="coerce")
-            if pd.notna(lat_center) and pd.notna(lon_center):
-                pad_lat = 0.03
-                pad_lon = 0.03
-                focus_bounds = {
-                    "southWest": [float(lat_center - pad_lat), float(lon_center - pad_lon)],
-                    "northEast": [float(lat_center + pad_lat), float(lon_center + pad_lon)],
-                }
-
-    if focus_bounds is None and not df_geo_city.empty:
-        lat_valid = pd.to_numeric(df_geo_city["lat"], errors="coerce")
-        lon_valid = pd.to_numeric(df_geo_city["lon"], errors="coerce")
-        df_tmp = df_geo_city.copy()
-        df_tmp["lat"] = lat_valid
-        df_tmp["lon"] = lon_valid
-        df_tmp = df_tmp.dropna(subset=["lat", "lon"])
-        if not df_tmp.empty:
-            min_lat = df_tmp["lat"].min()
-            max_lat = df_tmp["lat"].max()
-            min_lon = df_tmp["lon"].min()
-            max_lon = df_tmp["lon"].max()
-            focus_bounds = {
-                "southWest": [float(min_lat), float(min_lon)],
-                "northEast": [float(max_lat), float(max_lon)],
-            }
     routes_data = df_geo_city.to_dict("records")
     df_all_geo = routes_geo_all.dropna(subset=["lat", "lon"]).copy()
     all_routes_list = df_all_geo.to_dict("records")
@@ -1659,7 +1562,6 @@ def main():
         selected_route_id=route_id,
         all_routes=all_routes_list,
         key="traffic_map",
-        focus_bounds=focus_bounds,
     )
 
     if clicked_route_id is not None:
@@ -1693,113 +1595,25 @@ def main():
     else:
         st.write("**Chưa chọn tuyến nào**")
 
-    district_mode = (
-        city == "HoChiMinh"
-        and st.session_state.get("hcmc_view_mode") == "📍 Report by District (2h tới)"
-    )
-
-    if city == "HoChiMinh" and district_mode:
-        st.markdown("### 📍 Report by District (2h tới)")
-        wards = get_wards(routes_geo_all)
-        ward_placeholder = "Chọn quận/huyện..."
-        current_ward = st.session_state.get("district_filter", ward_placeholder)
-        if current_ward not in wards:
-            current_ward = ward_placeholder
-
-        ward_options = [ward_placeholder] + wards
-        default_idx = ward_options.index(
-            current_ward if current_ward in ward_options else ward_placeholder
-        )
-
-        selected_ward = st.selectbox(
-            "Chọn quận/huyện",
-            ward_options,
-            index=default_idx,
-            key="district_select",
-            help="Chọn quận/huyện để xem báo cáo tắc đường 2 giờ tới.",
-        )
-
-        if selected_ward == ward_placeholder:
-            st.session_state["district_filter"] = None
-            st.info("Chọn quận/huyện để xem báo cáo 2 giờ tới.")
-        else:
-            st.session_state["district_filter"] = selected_ward
-            now_ts = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh")
-            df_high, df_low, suggestions, _p_peak_map = compute_ward_next_2h_report(
-                selected_ward, now_ts
-            )
-
-            if df_high.empty and df_low.empty:
-                st.warning("Không lấy được dự báo cho các tuyến thuộc quận/huyện này.")
-            else:
-                if not df_high.empty:
-                    st.markdown("#### Tuyến có khả năng kẹt (2h tới)")
-                    display_high = pd.DataFrame(
-                        {
-                            "Tuyến": df_high["route_name"],
-                            "route_id": df_high["route_id"],
-                            "p_peak (%)": df_high["p_peak_pct"].round(1),
-                            "level": df_high["level"],
-                            "t_peak": df_high["t_peak_label"],
-                            "p_mean (%)": df_high["p_mean_pct"].round(1),
-                        }
-                    )
-                    st.dataframe(display_high, hide_index=True, use_container_width=True)
-                else:
-                    st.info("Không có tuyến nguy cơ kẹt trong 2 giờ tới.")
-
-                if not df_low.empty:
-                    st.markdown("#### Tuyến thông thoáng (2h tới)")
-                    display_low = pd.DataFrame(
-                        {
-                            "Tuyến": df_low["route_name"],
-                            "route_id": df_low["route_id"],
-                            "p_peak (%)": df_low["p_peak_pct"].round(1),
-                            "p_mean (%)": df_low["p_mean_pct"].round(1),
-                        }
-                    )
-                    st.dataframe(display_low, hide_index=True, use_container_width=True)
-                else:
-                    st.info("Không có tuyến mức độ thấp trong 2 giờ tới.")
-
-                st.markdown("#### Gợi ý lộ trình")
-                if suggestions.get("avoid"):
-                    st.write("**Nên tránh:** " + ", ".join(suggestions["avoid"]))
-                else:
-                    st.write("**Nên tránh:** Không có tuyến nguy cơ cao.")
-                    if not df_high.empty:
-                        st.caption(
-                            "(Các tuyến trong bảng trên ở mức trung bình nên không xuất hiện trong danh sách 'Nên tránh' vốn"
-                            " chỉ liệt kê tuyến mức cao.)"
-                        )
-
-                if suggestions.get("prefer"):
-                    st.write("**Nên ưu tiên:** " + ", ".join(suggestions["prefer"]))
-                else:
-                    st.write("**Nên ưu tiên:** Chưa có tuyến thật sự thoáng.")
-        return
-
-    if city == "HoChiMinh":
-        if not route_id:
-            st.info(
-                "👆 Hãy chọn một tuyến ở sidebar hoặc click vào marker trên bản đồ để xem forecast chi tiết."
-            )
-            return
-
-        render_hcmc_congestion_next_2h(route_id, routes_geo_all)
-
-        st.markdown("---")
-
-        render_hcmc_departure_advisor(route_id, routes_geo_all)
-        render_hcmc_weekly_pattern(route_id, routes_geo_all)
-        st.markdown("---")
-        render_hcmc_eval_summary_for_route(route_id)
-        return
-
 
     # nếu chưa có route thì chỉ show map, không load data/model
     if not route_id:
         st.info("👆 Hãy chọn một tuyến ở sidebar hoặc click vào marker trên bản đồ để xem forecast chi tiết.")
+        return
+
+    # HCMC: dùng GRU congestion riêng, không dùng pipeline Vehicles/h như I-94/Fremont
+    if city == "HoChiMinh":
+        # 1) Dự báo 2 giờ tới cho tuyến đang chọn
+        render_hcmc_congestion_next_2h(route_id, routes_geo_all)
+
+        st.markdown("---")
+
+        # 2) Trợ lý chọn giờ đi đường (dựa trên lịch sử)
+        render_hcmc_departure_advisor(route_id, routes_geo_all)
+        # 3) Heatmap mẫu hình cả tuần
+        render_hcmc_weekly_pattern(route_id, routes_geo_all)
+        st.markdown("---")
+        render_hcmc_eval_summary_for_route(route_id)
         return
 
     # ====================================
@@ -2563,91 +2377,6 @@ def main():
                 if i % 2 == 1 and i < len(metrics_list) - 1:
                     cols = st.columns(2)
 
-        # -----------------
-        # 7.2 Tab Weekly
-        # -----------------
-        with tab_cmp_weekly:
-
-            df_weekly = df_eval.copy()
-            df_weekly["Date"] = pd.to_datetime(df_weekly["Date"])
-
-            # Convert thành tuần
-            df_weekly["WeekStart"] = df_weekly["Date"].dt.to_period("W").apply(lambda r: r.start_time)
-            df_weekly["WeekEnd"] = df_weekly["Date"].dt.to_period("W").apply(lambda r: r.end_time)
-
-            # Gom weekly (sum cho traffic)
-            # Lấy toàn bộ cột Daily_*
-            daily_cols = [c for c in df_weekly.columns if c.startswith("Daily")]
-
-            # Tạo dict động cho agg
-            agg_dict = {c: "sum" for c in daily_cols}
-
-            # Group
-            df_weekly = (
-                df_weekly.groupby(["WeekStart", "WeekEnd"])
-                .agg(agg_dict)
-                .reset_index()
-            )
-
-            # Đổi tên cột Daily* → Weekly*
-            df_weekly = df_weekly.rename(
-                columns={c: c.replace("Daily", "Weekly") for c in daily_cols}
-            )
-
-            # Format range: YYYY-MM-DD → YYYY-MM-DD
-            df_weekly["WeekRange"] = df_weekly["WeekStart"].dt.strftime("%Y-%m-%d") + " → " + \
-                                     df_weekly["WeekEnd"].dt.strftime("%Y-%m-%d")
-
-            # ==== Chart multi-line Weekly (Actual + Models) ====
-            st.subheader("WEEKLY (Actual + Models) – 3 tháng gần nhất")
-
-            frames = [
-                df_weekly[["WeekStart", "WeeklyActual"]]
-                .rename(columns={"WeeklyActual": "WeeklyValue"})
-                .assign(Source="Actual")
-            ]
-
-            for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
-                col_name = f"Weekly_{m_name}"
-                if col_name in df_weekly.columns and df_weekly[col_name].notna().any():
-                    frames.append(
-                        df_weekly[["WeekStart", col_name]]
-                        .rename(columns={col_name: "WeeklyValue"})
-                        .assign(Source=m_name)
-                    )
-
-            if frames:
-                df_chart_w = pd.concat(frames, ignore_index=True)
-                df_chart_w = df_chart_w.sort_values("WeekStart")
-
-                chart_weekly = (
-                    alt.Chart(df_chart_w)
-                    .mark_line(point=True)
-                    .encode(
-                        x=alt.X("WeekStart:T", title="Week (Start Date)"),
-                        y=alt.Y("WeeklyValue:Q", title="Vehicles / week"),
-                        color=alt.Color("Source:N", title="Series"),
-                        tooltip=[
-                            alt.Tooltip("WeekStart:T", title="Week Start"),
-                            alt.Tooltip("Source:N", title="Series"),
-                            alt.Tooltip("WeeklyValue:Q", title="Vehicles/week", format=","),
-                        ],
-                    )
-                    .properties(height=300)
-                )
-                st.altair_chart(chart_weekly, use_container_width=True)
-
-                with st.expander("Xem bảng Weekly (Actual + Models) – tổng hợp theo tuần"):
-                    df_weekly_show = df_weekly.copy()
-                    for c in df_weekly_show.columns:
-                        if c.startswith("Weekly"):
-                            df_weekly_show[c] = df_weekly_show[c].round().astype("Int64").apply(lambda x: f"{x:,.0f}")
-                    st.dataframe(
-                        df_weekly_show[["WeekRange"] +
-                                  [c for c in df_weekly_show.columns if
-                                   c not in ["Date", "Year", "Week", "WeekRange", "WeekStart", "WeekEnd"]]],
-                        use_container_width=True
-                    )
             else:
                 st.info("Không có series nào (GRU/RNN/LSTM/ARIMA/SARIMA) để hiển thị.")
 
@@ -2889,36 +2618,42 @@ def main():
 
                 st.dataframe(df_formatted_monthly, use_container_width=True)
 
-            # ==== Biểu đồ cột cho từng đánh giá ====
-            st.subheader("📊 Biểu đồ cột cho từng đánh giá sai số")
-            metrics_list = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
-            cols = st.columns(2)
+                # ==== Biểu đồ cột cho từng đánh giá ====
+                st.subheader("📊 Biểu đồ cột cho từng đánh giá sai số")
+                metrics_list = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
+                cols = st.columns(2)
 
-            for i, metric in enumerate(metrics_list):
-                chart = (
-                    alt.Chart(df_metrics_monthly)
-                    .mark_bar()
-                    .encode(
-                        x=alt.X("Model:N", title="Model", axis=alt.Axis(labelAngle=0)),
-                        y=alt.Y(f"{metric}:Q", title=metric),
-                        tooltip=["Model", metric]
-                    )
-                    .properties(
-                        height=300,
-                        title=alt.TitleParams(
-                            f"{metric}",
-                            fontSize=24,
-                            fontWeight="bold",
-                            color="#333",
-                            anchor="middle"  # căn giữa
+                for i, metric in enumerate(metrics_list):
+                    chart = (
+                        alt.Chart(df_metrics_monthly)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("Model:N", title="Model", axis=alt.Axis(labelAngle=0)),
+                            y=alt.Y(f"{metric}:Q", title=metric),
+                            tooltip=["Model", metric],
+                        )
+                        .properties(
+                            height=300,
+                            title=alt.TitleParams(
+                                f"{metric}",
+                                fontSize=24,
+                                fontWeight="bold",
+                                color="#333",
+                                anchor="middle",  # căn giữa
+                            ),
                         )
                     )
-                )
 
-                cols[i % 2].altair_chart(chart, use_container_width=True)
+                    cols[i % 2].altair_chart(chart, use_container_width=True)
 
-                if i % 2 == 1 and i < len(metrics_list) - 1:
-                    cols = st.columns(2)
+                    if i % 2 == 1 and i < len(metrics_list) - 1:
+                        cols = st.columns(2)
+
+    elif tab == "Roadmap Assistant":
+        if city == "HoChiMinh":
+            st.info("Roadmap Assistant hiện giữ nguyên trải nghiệm cho TP.HCM.")
+        else:
+            st.warning("Khu vực chưa được support")
 
 
 if __name__ == "__main__":

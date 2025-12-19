@@ -37,7 +37,6 @@ let globalBounds = null;
 let resetAdded = false;
 let legendAdded = false;
 let firstRender = true;
-let focusBounds = null;
 
 function ensureMap() {
   if (!map) {
@@ -152,17 +151,18 @@ function addLegend() {
 function updateMarkers(routesData, selectedRouteId, allRoutes) {
   ensureMap();
 
-  const routesList = routesData || [];
-  const allList = (allRoutes && allRoutes.length > 0) ? allRoutes : routesList;
+  // Luôn vẽ marker cho TẤT CẢ các route (nhiều city)
+  const list = (allRoutes && allRoutes.length > 0)
+    ? allRoutes
+    : (routesData || []);
 
   markersGroup.clearLayers();
   markersById = {};
 
   // Global bounds tính trên toàn bộ marker
-  globalBounds = computeBounds(allList);
-  const cityBounds = computeBounds(routesList);
+  globalBounds = computeBounds(list);
 
-  allList.forEach((r) => {
+  list.forEach((r) => {
     const lat = Number(r.lat);
     const lon = Number(r.lon);
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
@@ -209,16 +209,15 @@ function updateMarkers(routesData, selectedRouteId, allRoutes) {
     const latlng = markersById[selectedRouteId].getLatLng();
     map.setView(latlng, 15);
     firstRender = false;
-  } else if (focusBounds) {
-    map.fitBounds(focusBounds, { padding: [80, 80] });
-    firstRender = false;
-  } else if (cityBounds) {
-    // Ưu tiên zoom theo các route của city đang hiển thị
-    map.fitBounds(cityBounds, { padding: [80, 80] });
+  } else if (firstRender) {
+    // Lần đầu chưa có route → overview tất cả
+    if (globalBounds) {
+      map.fitBounds(globalBounds, { padding: [80, 80] });
+    }
     firstRender = false;
   } else if (globalBounds) {
+    // Fallback: overview
     map.fitBounds(globalBounds, { padding: [80, 80] });
-    firstRender = false;
   }
 
 
@@ -253,16 +252,6 @@ function handleRender(args) {
   const routesData = args.data || [];
   const selectedRouteId = args.selected_route_id || null;
   const allRoutes = args.all_routes || [];
-  const fb = args.focus_bounds;
-
-  if (fb && fb.southWest && fb.northEast) {
-    focusBounds = L.latLngBounds(
-      L.latLng(fb.southWest[0], fb.southWest[1]),
-      L.latLng(fb.northEast[0], fb.northEast[1])
-    );
-  } else {
-    focusBounds = null;
-  }
 
   updateMarkers(routesData, selectedRouteId, allRoutes);
 

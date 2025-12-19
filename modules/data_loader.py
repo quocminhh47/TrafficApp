@@ -4,8 +4,6 @@ from pathlib import Path
 import glob
 import pandas as pd
 
-from modules.geo_routes import load_routes_geo
-
 DATA_ROOT = Path("data/processed_ds")
 
 
@@ -114,32 +112,6 @@ def list_zones(city: str) -> list[str]:
     Liệt kê zone cho 1 city.
     Trả về list đã include "(All)" ở đầu.
     """
-    if city == "HoChiMinh":
-        routes_geo = load_routes_geo().fillna("")
-        df_city = routes_geo[routes_geo["city"] == "HoChiMinh"]
-        if df_city.empty or "district" not in df_city.columns:
-            return []
-
-        def _flatten(values):
-            out: list[str] = []
-            for v in values:
-                if isinstance(v, (list, tuple, set)):
-                    for item in v:
-                        s = str(item).strip()
-                        if s:
-                            out.append(s)
-                else:
-                    s = str(v).strip()
-                    if s:
-                        out.append(s)
-            return out
-
-        districts_raw = df_city["district"].dropna().tolist()
-        districts = sorted(set(_flatten(districts_raw)))
-        if not districts:
-            return []
-        return ["(All)"] + districts
-
     base = DATA_ROOT / city
     if not base.is_dir():
         return []

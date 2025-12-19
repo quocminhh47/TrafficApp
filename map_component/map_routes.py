@@ -23,7 +23,7 @@ else:
     )
 
 
-def map_routes(routes_data, selected_route_id, all_routes=None, key=None, focus_bounds=None):
+def map_routes(routes_data, selected_route_id, all_routes=None, key=None):
     """
     Hiển thị bản đồ các tuyến đường (routes) với custom Leaflet frontend.
 
@@ -42,12 +42,6 @@ def map_routes(routes_data, selected_route_id, all_routes=None, key=None, focus_
 
     key : str or None
         Key cho component trong Streamlit.
-    focus_bounds : dict or None
-        Optionally cung cấp bounds để zoom (ví dụ theo quận), dạng:
-        {
-          "southWest": [minLat, minLon],
-          "northEast": [maxLat, maxLon],
-        }
 
     Returns
     -------
@@ -59,7 +53,6 @@ def map_routes(routes_data, selected_route_id, all_routes=None, key=None, focus_
         data=routes_data,
         selected_route_id=selected_route_id,
         all_routes=all_routes,  # << gửi thêm xuống frontend
-        focus_bounds=focus_bounds,
         key=key,
         default=None,
     )
