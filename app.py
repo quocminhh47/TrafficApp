@@ -1358,14 +1358,15 @@ def main():
             )
             current_zone = zone
 
+    # alias cho phần còn lại của code
+    city = current_city
+    zone = current_zone
+
     if city == "HoChiMinh":
         if zone in (None, "(All)"):
             st.session_state["district_filter"] = None
         else:
             st.session_state["district_filter"] = zone
-    # alias cho phần còn lại của code
-    city = current_city
-    zone = current_zone
 
     # ====================================
     # 2) LOAD MODEL CONTEXT (FALLBACK zone='(All)')
