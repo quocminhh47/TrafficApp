@@ -12,7 +12,7 @@ from functools import lru_cache
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 from modules.data_loader import load_slice, list_cities, list_zones, list_routes
-from modules.geo_routes import load_routes_geo
+from modules.geo_routes import load_hcmc_district_centers, load_routes_geo
 from modules.ward_report import (
     compute_ward_next_2h_report,
     get_wards,
@@ -1578,7 +1578,21 @@ def main():
             )
         ]
     focus_bounds = None
-    if not df_geo_city.empty:
+    if city == "HoChiMinh" and district_filter:
+        centers_df = load_hcmc_district_centers()
+        center_row = centers_df[centers_df["district"] == district_filter]
+        if not center_row.empty:
+            lat_center = pd.to_numeric(center_row.iloc[0]["district_lat"], errors="coerce")
+            lon_center = pd.to_numeric(center_row.iloc[0]["district_lon"], errors="coerce")
+            if pd.notna(lat_center) and pd.notna(lon_center):
+                pad_lat = 0.03
+                pad_lon = 0.03
+                focus_bounds = {
+                    "southWest": [float(lat_center - pad_lat), float(lon_center - pad_lon)],
+                    "northEast": [float(lat_center + pad_lat), float(lon_center + pad_lon)],
+                }
+
+    if focus_bounds is None and not df_geo_city.empty:
         lat_valid = pd.to_numeric(df_geo_city["lat"], errors="coerce")
         lon_valid = pd.to_numeric(df_geo_city["lon"], errors="coerce")
         df_tmp = df_geo_city.copy()

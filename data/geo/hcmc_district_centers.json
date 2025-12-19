@@ -1,0 +1,75 @@
+{
+  "city": "HoChiMinh",
+  "district_centers": [
+    {
+      "district": "Quận 1",
+      "district_lat": 10.7769,
+      "district_lon": 106.7009
+    },
+    {
+      "district": "Quận 3",
+      "district_lat": 10.7840,
+      "district_lon": 106.6840
+    },
+    {
+      "district": "Quận 5",
+      "district_lat": 10.7540,
+      "district_lon": 106.6634
+    },
+    {
+      "district": "Quận 10",
+      "district_lat": 10.7746,
+      "district_lon": 106.6679
+    },
+    {
+      "district": "Quận 11",
+      "district_lat": 10.7639,
+      "district_lon": 106.6435
+    },
+    {
+      "district": "Quận Tân Bình",
+      "district_lat": 10.8016,
+      "district_lon": 106.6521
+    },
+    {
+      "district": "Quận Tân Phú",
+      "district_lat": 10.7900,
+      "district_lon": 106.6280
+    },
+    {
+      "district": "Quận Gò Vấp",
+      "district_lat": 10.8386,
+      "district_lon": 106.6656
+    },
+    {
+      "district": "Quận Phú Nhuận",
+      "district_lat": 10.8000,
+      "district_lon": 106.6800
+    },
+    {
+      "district": "Quận 12",
+      "district_lat": 10.8671,
+      "district_lon": 106.6415
+    },
+    {
+      "district": "Quận Bình Tân",
+      "district_lat": 10.7650,
+      "district_lon": 106.6075
+    },
+    {
+      "district": "Thành phố Thủ Đức",
+      "district_lat": 10.8500,
+      "district_lon": 106.7550
+    },
+    {
+      "district": "Huyện Hóc Môn",
+      "district_lat": 10.8910,
+      "district_lon": 106.5920
+    },
+    {
+      "district": "Huyện Bình Chánh",
+      "district_lat": 10.7400,
+      "district_lon": 106.5900
+    }
+  ]
+}
