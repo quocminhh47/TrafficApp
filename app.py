@@ -1362,6 +1362,21 @@ def main():
     city = current_city
     zone = current_zone
 
+    # Chế độ hiển thị riêng cho HCMC (tách phần Report by District ra sidebar)
+    if city == "HoChiMinh":
+        view_mode_options = ["🚦 Dự báo theo tuyến", "📍 Report by District (2h tới)"]
+        current_view_mode = st.session_state.get("hcmc_view_mode", view_mode_options[0])
+        if current_view_mode not in view_mode_options:
+            current_view_mode = view_mode_options[0]
+        st.session_state["hcmc_view_mode"] = st.sidebar.radio(
+            "Chế độ hiển thị (HCMC)",
+            view_mode_options,
+            index=view_mode_options.index(current_view_mode),
+            key="hcmc_view_mode",
+        )
+    else:
+        st.session_state["hcmc_view_mode"] = "🚦 Dự báo theo tuyến"
+
     if city == "HoChiMinh":
         if zone in (None, "(All)"):
             st.session_state["district_filter"] = None
@@ -1678,104 +1693,107 @@ def main():
     else:
         st.write("**Chưa chọn tuyến nào**")
 
-    if city == "HoChiMinh":
-        route_tab, ward_tab = st.tabs(
-            ["🚦 Dự báo theo tuyến", "📍 Report by District (2h tới)"]
+    district_mode = (
+        city == "HoChiMinh"
+        and st.session_state.get("hcmc_view_mode") == "📍 Report by District (2h tới)"
+    )
+
+    if city == "HoChiMinh" and district_mode:
+        st.markdown("### 📍 Report by District (2h tới)")
+        wards = get_wards(routes_geo_all)
+        ward_placeholder = "Chọn quận/huyện..."
+        current_ward = st.session_state.get("district_filter", ward_placeholder)
+        if current_ward not in wards:
+            current_ward = ward_placeholder
+
+        ward_options = [ward_placeholder] + wards
+        default_idx = ward_options.index(
+            current_ward if current_ward in ward_options else ward_placeholder
         )
 
-        with ward_tab:
-            st.markdown("### 📍 Report by District (2h tới)")
-            wards = get_wards(routes_geo_all)
-            ward_placeholder = "Chọn quận/huyện..."
-            current_ward = st.session_state.get("district_filter", ward_placeholder)
-            if current_ward not in wards:
-                current_ward = ward_placeholder
+        selected_ward = st.selectbox(
+            "Chọn quận/huyện",
+            ward_options,
+            index=default_idx,
+            key="district_select",
+            help="Chọn quận/huyện để xem báo cáo tắc đường 2 giờ tới.",
+        )
 
-            ward_options = [ward_placeholder] + wards
-            default_idx = ward_options.index(
-                current_ward if current_ward in ward_options else ward_placeholder
+        if selected_ward == ward_placeholder:
+            st.session_state["district_filter"] = None
+            st.info("Chọn quận/huyện để xem báo cáo 2 giờ tới.")
+        else:
+            st.session_state["district_filter"] = selected_ward
+            now_ts = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh")
+            df_high, df_low, suggestions, _p_peak_map = compute_ward_next_2h_report(
+                selected_ward, now_ts
             )
 
-            selected_ward = st.selectbox(
-                "Chọn quận/huyện",
-                ward_options,
-                index=default_idx,
-                key="district_select",
-                help="Chọn quận/huyện để xem báo cáo tắc đường 2 giờ tới.",
-            )
-
-            if selected_ward == ward_placeholder:
-                st.session_state["district_filter"] = None
-                st.info("Chọn quận/huyện để xem báo cáo 2 giờ tới.")
+            if df_high.empty and df_low.empty:
+                st.warning("Không lấy được dự báo cho các tuyến thuộc quận/huyện này.")
             else:
-                st.session_state["district_filter"] = selected_ward
-                now_ts = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh")
-                df_high, df_low, suggestions, _p_peak_map = compute_ward_next_2h_report(
-                    selected_ward, now_ts
-                )
-
-                if df_high.empty and df_low.empty:
-                    st.warning("Không lấy được dự báo cho các tuyến thuộc quận/huyện này.")
+                if not df_high.empty:
+                    st.markdown("#### Tuyến có khả năng kẹt (2h tới)")
+                    display_high = pd.DataFrame(
+                        {
+                            "Tuyến": df_high["route_name"],
+                            "route_id": df_high["route_id"],
+                            "p_peak (%)": df_high["p_peak_pct"].round(1),
+                            "level": df_high["level"],
+                            "t_peak": df_high["t_peak_label"],
+                            "p_mean (%)": df_high["p_mean_pct"].round(1),
+                        }
+                    )
+                    st.dataframe(display_high, hide_index=True, use_container_width=True)
                 else:
+                    st.info("Không có tuyến nguy cơ kẹt trong 2 giờ tới.")
+
+                if not df_low.empty:
+                    st.markdown("#### Tuyến thông thoáng (2h tới)")
+                    display_low = pd.DataFrame(
+                        {
+                            "Tuyến": df_low["route_name"],
+                            "route_id": df_low["route_id"],
+                            "p_peak (%)": df_low["p_peak_pct"].round(1),
+                            "p_mean (%)": df_low["p_mean_pct"].round(1),
+                        }
+                    )
+                    st.dataframe(display_low, hide_index=True, use_container_width=True)
+                else:
+                    st.info("Không có tuyến mức độ thấp trong 2 giờ tới.")
+
+                st.markdown("#### Gợi ý lộ trình")
+                if suggestions.get("avoid"):
+                    st.write("**Nên tránh:** " + ", ".join(suggestions["avoid"]))
+                else:
+                    st.write("**Nên tránh:** Không có tuyến nguy cơ cao.")
                     if not df_high.empty:
-                        st.markdown("#### Tuyến có khả năng kẹt (2h tới)")
-                        display_high = pd.DataFrame(
-                            {
-                                "Tuyến": df_high["route_name"],
-                                "route_id": df_high["route_id"],
-                                "p_peak (%)": df_high["p_peak_pct"].round(1),
-                                "level": df_high["level"],
-                                "t_peak": df_high["t_peak_label"],
-                                "p_mean (%)": df_high["p_mean_pct"].round(1),
-                            }
+                        st.caption(
+                            "(Các tuyến trong bảng trên ở mức trung bình nên không xuất hiện trong danh sách 'Nên tránh' vốn"
+                            " chỉ liệt kê tuyến mức cao.)"
                         )
-                        st.dataframe(display_high, hide_index=True, use_container_width=True)
-                    else:
-                        st.info("Không có tuyến nguy cơ kẹt trong 2 giờ tới.")
 
-                    if not df_low.empty:
-                        st.markdown("#### Tuyến thông thoáng (2h tới)")
-                        display_low = pd.DataFrame(
-                            {
-                                "Tuyến": df_low["route_name"],
-                                "route_id": df_low["route_id"],
-                                "p_peak (%)": df_low["p_peak_pct"].round(1),
-                                "p_mean (%)": df_low["p_mean_pct"].round(1),
-                            }
-                        )
-                        st.dataframe(display_low, hide_index=True, use_container_width=True)
-                    else:
-                        st.info("Không có tuyến mức độ thấp trong 2 giờ tới.")
+                if suggestions.get("prefer"):
+                    st.write("**Nên ưu tiên:** " + ", ".join(suggestions["prefer"]))
+                else:
+                    st.write("**Nên ưu tiên:** Chưa có tuyến thật sự thoáng.")
+        return
 
-                    st.markdown("#### Gợi ý lộ trình")
-                    if suggestions.get("avoid"):
-                        st.write("**Nên tránh:** " + ", ".join(suggestions["avoid"]))
-                    else:
-                        st.write("**Nên tránh:** Không có tuyến nguy cơ cao.")
-                        if not df_high.empty:
-                            st.caption(
-                                "(Các tuyến trong bảng trên ở mức trung bình nên không xuất hiện trong danh sách 'Nên tránh' vốn chỉ liệt kê tuyến mức cao.)"
-                            )
+    if city == "HoChiMinh":
+        if not route_id:
+            st.info(
+                "👆 Hãy chọn một tuyến ở sidebar hoặc click vào marker trên bản đồ để xem forecast chi tiết."
+            )
+            return
 
-                    if suggestions.get("prefer"):
-                        st.write("**Nên ưu tiên:** " + ", ".join(suggestions["prefer"]))
-                    else:
-                        st.write("**Nên ưu tiên:** Chưa có tuyến thật sự thoáng.")
+        render_hcmc_congestion_next_2h(route_id, routes_geo_all)
 
-        with route_tab:
-            if not route_id:
-                st.info(
-                    "👆 Hãy chọn một tuyến ở sidebar hoặc click vào marker trên bản đồ để xem forecast chi tiết."
-                )
-            else:
-                render_hcmc_congestion_next_2h(route_id, routes_geo_all)
+        st.markdown("---")
 
-                st.markdown("---")
-
-                render_hcmc_departure_advisor(route_id, routes_geo_all)
-                render_hcmc_weekly_pattern(route_id, routes_geo_all)
-                st.markdown("---")
-                render_hcmc_eval_summary_for_route(route_id)
+        render_hcmc_departure_advisor(route_id, routes_geo_all)
+        render_hcmc_weekly_pattern(route_id, routes_geo_all)
+        st.markdown("---")
+        render_hcmc_eval_summary_for_route(route_id)
         return
 
 
