@@ -1324,7 +1324,7 @@ def main():
     else:
         zones = list_zones(current_city)
 
-        # Trường hợp city không có zone (ví dụ HoChiMinh)
+        # Trường hợp city không có zone (ví dụ HoChiMinh trước đây)
         if not zones:
             st.sidebar.selectbox(
                 "Zone",
@@ -1357,6 +1357,12 @@ def main():
                 disabled=False,
             )
             current_zone = zone
+
+    if city == "HoChiMinh":
+        if zone in (None, "(All)"):
+            st.session_state["district_filter"] = None
+        else:
+            st.session_state["district_filter"] = zone
     # alias cho phần còn lại của code
     city = current_city
     zone = current_zone
@@ -1443,6 +1449,15 @@ def main():
     # luôn khai báo raw_routes, kể cả khi chưa chọn city
     raw_routes = []
 
+    def _district_matches(value, target_norm: str | None) -> bool:
+        if not target_norm:
+            return True
+        vals = value if isinstance(value, (list, tuple, set)) else [value]
+        for v in vals:
+            if str(v).strip().lower() == target_norm:
+                return True
+        return False
+
     if not has_city:
         # Chưa chọn city → disable route
         route_selected = st.sidebar.selectbox(
@@ -1453,12 +1468,28 @@ def main():
         )
         route_id = None
     else:
+        district_filter = (
+            st.session_state.get("district_filter")
+            if city == "HoChiMinh"
+            else None
+        )
+        district_filter_norm = (
+            str(district_filter).strip().lower() if district_filter else None
+        )
+
         if city == "HoChiMinh":
             # HCMC: lấy route từ routes_geo, hiển thị name, value = route_id
             routes_geo_all_sidebar = load_routes_with_district().fillna("")
             df_geo_city_sb = routes_geo_all_sidebar[
                 routes_geo_all_sidebar["city"] == "HoChiMinh"
             ].copy()
+
+            if district_filter_norm:
+                df_geo_city_sb = df_geo_city_sb[
+                    df_geo_city_sb["district"].apply(
+                        lambda d: _district_matches(d, district_filter_norm)
+                    )
+                ]
 
             if df_geo_city_sb.empty:
                 st.error("Không tìm thấy tuyến HCMC nào trong routes_geo.")
@@ -1560,27 +1591,22 @@ def main():
         if city == "HoChiMinh"
         else None
     )
+    district_filter_norm = (
+        str(district_filter).strip().lower() if district_filter else None
+    )
 
     df_geo_city = routes_geo_all[routes_geo_all["city"] == city].copy()
-    if district_filter:
+    if district_filter_norm:
         df_geo_city = df_geo_city[
             df_geo_city["district"].apply(
-                lambda d: district_filter
-                in [
-                    str(x).strip()
-                    for x in (
-                        d
-                        if isinstance(d, (list, tuple, set))
-                        else [d]
-                    )
-                    if str(x).strip()
-                ]
+                lambda d: _district_matches(d, district_filter_norm)
             )
         ]
     focus_bounds = None
-    if city == "HoChiMinh" and district_filter:
+    if city == "HoChiMinh" and district_filter_norm:
         centers_df = load_hcmc_district_centers()
-        center_row = centers_df[centers_df["district"] == district_filter]
+        centers_df["_norm"] = centers_df["district"].astype(str).str.strip().str.lower()
+        center_row = centers_df[centers_df["_norm"] == district_filter_norm]
         if not center_row.empty:
             lat_center = pd.to_numeric(center_row.iloc[0]["district_lat"], errors="coerce")
             lon_center = pd.to_numeric(center_row.iloc[0]["district_lon"], errors="coerce")
