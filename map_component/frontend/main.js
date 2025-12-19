@@ -37,6 +37,7 @@ let globalBounds = null;
 let resetAdded = false;
 let legendAdded = false;
 let firstRender = true;
+let focusBounds = null;
 
 function ensureMap() {
   if (!map) {
@@ -208,6 +209,9 @@ function updateMarkers(routesData, selectedRouteId, allRoutes) {
     const latlng = markersById[selectedRouteId].getLatLng();
     map.setView(latlng, 15);
     firstRender = false;
+  } else if (focusBounds) {
+    map.fitBounds(focusBounds, { padding: [80, 80] });
+    firstRender = false;
   } else if (cityBounds) {
     // Ưu tiên zoom theo các route của city đang hiển thị
     map.fitBounds(cityBounds, { padding: [80, 80] });
@@ -249,6 +253,16 @@ function handleRender(args) {
   const routesData = args.data || [];
   const selectedRouteId = args.selected_route_id || null;
   const allRoutes = args.all_routes || [];
+  const fb = args.focus_bounds;
+
+  if (fb && fb.southWest && fb.northEast) {
+    focusBounds = L.latLngBounds(
+      L.latLng(fb.southWest[0], fb.southWest[1]),
+      L.latLng(fb.northEast[0], fb.northEast[1])
+    );
+  } else {
+    focusBounds = null;
+  }
 
   updateMarkers(routesData, selectedRouteId, allRoutes);
 

@@ -1577,6 +1577,23 @@ def main():
                 ]
             )
         ]
+    focus_bounds = None
+    if not df_geo_city.empty:
+        lat_valid = pd.to_numeric(df_geo_city["lat"], errors="coerce")
+        lon_valid = pd.to_numeric(df_geo_city["lon"], errors="coerce")
+        df_tmp = df_geo_city.copy()
+        df_tmp["lat"] = lat_valid
+        df_tmp["lon"] = lon_valid
+        df_tmp = df_tmp.dropna(subset=["lat", "lon"])
+        if not df_tmp.empty:
+            min_lat = df_tmp["lat"].min()
+            max_lat = df_tmp["lat"].max()
+            min_lon = df_tmp["lon"].min()
+            max_lon = df_tmp["lon"].max()
+            focus_bounds = {
+                "southWest": [float(min_lat), float(min_lon)],
+                "northEast": [float(max_lat), float(max_lon)],
+            }
     routes_data = df_geo_city.to_dict("records")
     df_all_geo = routes_geo_all.dropna(subset=["lat", "lon"]).copy()
     all_routes_list = df_all_geo.to_dict("records")
@@ -1586,6 +1603,7 @@ def main():
         selected_route_id=route_id,
         all_routes=all_routes_list,
         key="traffic_map",
+        focus_bounds=focus_bounds,
     )
 
     if clicked_route_id is not None:
