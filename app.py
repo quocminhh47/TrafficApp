@@ -1638,8 +1638,8 @@ def main():
         st.write("**Chưa chọn tuyến nào**")
 
     if city == "HoChiMinh":
-        ward_tab, route_tab = st.tabs(
-            ["📍 Report by District (2h tới)", "🚦 Dự báo theo tuyến"]
+        route_tab, ward_tab = st.tabs(
+            ["🚦 Dự báo theo tuyến", "📍 Report by District (2h tới)"]
         )
 
         with ward_tab:
@@ -1650,19 +1650,7 @@ def main():
             if current_ward not in wards:
                 current_ward = ward_placeholder
 
-            search_kw = st.text_input(
-                "Tìm quận/huyện",
-                value="",
-                key="district_search_kw",
-                placeholder="Nhập tên quận/huyện để lọc...",
-            ).strip()
-            wards_filtered = (
-                [w for w in wards if search_kw.lower() in w.lower()]
-                if search_kw
-                else wards
-            )
-
-            ward_options = [ward_placeholder] + wards_filtered
+            ward_options = [ward_placeholder] + wards
             default_idx = ward_options.index(
                 current_ward if current_ward in ward_options else ward_placeholder
             )
@@ -1723,6 +1711,10 @@ def main():
                         st.write("**Nên tránh:** " + ", ".join(suggestions["avoid"]))
                     else:
                         st.write("**Nên tránh:** Không có tuyến nguy cơ cao.")
+                        if not df_high.empty:
+                            st.caption(
+                                "(Các tuyến trong bảng trên ở mức trung bình nên không xuất hiện trong danh sách 'Nên tránh' vốn chỉ liệt kê tuyến mức cao.)"
+                            )
 
                     if suggestions.get("prefer"):
                         st.write("**Nên ưu tiên:** " + ", ".join(suggestions["prefer"]))
