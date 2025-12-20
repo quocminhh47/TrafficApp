@@ -1259,6 +1259,119 @@ def render_hcmc_weekly_pattern(route_id: str, routes_geo_all: pd.DataFrame):
     st.dataframe(styled, use_container_width=True)
 
 
+# =====================================================
+# HCMC DISTRICT HELPERS (Roadmap Assistant)
+# =====================================================
+
+
+def _flatten_districts(value) -> list[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if pd.isna(value):
+        return []
+    return [str(value).strip()]
+
+
+def _list_hcmc_districts(routes_geo_df: pd.DataFrame) -> list[str]:
+    df_city = routes_geo_df[routes_geo_df["city"] == "HoChiMinh"].copy()
+    if df_city.empty:
+        return []
+
+    all_districts: list[str] = []
+    if "district" in df_city.columns:
+        for val in df_city["district"]:
+            all_districts.extend(_flatten_districts(val))
+
+    return sorted(set(all_districts))
+
+
+@st.cache_data(ttl=600)
+def compute_hcmc_district_report(district: str):
+    routes_geo_all = load_routes_geo().fillna("")
+    df_city = routes_geo_all[routes_geo_all["city"] == "HoChiMinh"].copy()
+    if df_city.empty:
+        return None, None, None
+
+    if "district" not in df_city.columns:
+        return None, None, None
+
+    mask = df_city["district"].apply(lambda v: district in _flatten_districts(v))
+    df_district = df_city[mask].copy()
+
+    rows: list[dict] = []
+    for _, row in df_district.iterrows():
+        rid = row.get("route_id")
+        if not rid:
+            continue
+
+        out = forecast_hcmc_next_2h(rid, routes_geo_all)
+        if out is None:
+            continue
+
+        df_fc, full_name = out
+        df_fc = df_fc.copy()
+        df_fc["ProbCongested"] = pd.to_numeric(
+            df_fc.get("ProbCongested"), errors="coerce"
+        ).clip(0.0, 1.0)
+
+        probs = df_fc["ProbCongested"].dropna()
+        if probs.empty:
+            continue
+
+        p_peak = float(probs.max())
+        p_mean = float(probs.mean())
+        t_peak_ts = pd.to_datetime(
+            df_fc.loc[probs.idxmax(), "DateTime"], errors="coerce"
+        )
+        t_peak_label = t_peak_ts.strftime("%H:%M") if pd.notna(t_peak_ts) else ""
+
+        if p_peak > 0.7:
+            level = "high"
+        elif p_peak > 0.3:
+            level = "medium"
+        else:
+            level = "low"
+
+        rows.append(
+            {
+                "route_id": rid,
+                "route_name": full_name or row.get("name") or rid,
+                "p_peak": p_peak,
+                "p_mean": p_mean,
+                "t_peak": t_peak_label,
+                "level": level,
+            }
+        )
+
+    if not rows:
+        return None, None, None
+
+    df_res = pd.DataFrame(rows)
+    df_res.sort_values("p_peak", ascending=False, inplace=True)
+
+    df_congested = df_res[df_res["level"].isin(["high", "medium"])]
+    df_free = df_res[df_res["level"] == "low"].sort_values("p_peak")
+
+    avoid_suggest = (
+        df_res[df_res["level"] == "high"]
+        .sort_values("p_peak", ascending=False)
+        .head(3)["route_name"]
+        .tolist()
+    )
+    prefer_suggest = (
+        df_free.sort_values("p_peak", ascending=True)
+        .head(3)["route_name"]
+        .tolist()
+    )
+
+    suggestions = {
+        "avoid": avoid_suggest,
+        "prefer": prefer_suggest,
+    }
+
+    return df_congested, df_free, suggestions
+
+
 # ======================================================
 # MAIN APP
 # ======================================================
@@ -1317,9 +1430,13 @@ def main():
         zone = None
         current_zone = None
     else:
-        zones = list_zones(current_city)
+        if current_city == "HoChiMinh":
+            routes_geo_all_sidebar = load_routes_geo().fillna("")
+            hcmc_districts = _list_hcmc_districts(routes_geo_all_sidebar)
+            zones = ["(All)"] + hcmc_districts if hcmc_districts else ["(All)"]
+        else:
+            zones = list_zones(current_city)
 
-        # Trường hợp city không có zone (ví dụ HoChiMinh)
         if not zones:
             st.sidebar.selectbox(
                 "Zone",
@@ -1330,17 +1447,11 @@ def main():
             zone = None
             current_zone = None
         else:
-            # Nếu có nhiều zone:
-            #  - đưa "(All)" lên đầu
-            #  - nếu chưa có "(All)" mà >1 zone → thêm "(All)" vào đầu
             if "(All)" in zones:
                 zones = ["(All)"] + [z for z in zones if z != "(All)"]
             elif len(zones) > 1:
                 zones = ["(All)"] + zones
 
-            # Default zone:
-            #   - Nếu có "(All)" → chọn "(All)"
-            #   - Nếu chỉ có 1 zone → chọn đúng zone đó
             if "zone" not in st.session_state or st.session_state["zone"] not in zones:
                 default_zone = "(All)" if "(All)" in zones else zones[0]
                 st.session_state["zone"] = default_zone
@@ -1582,6 +1693,72 @@ def main():
                 st.session_state["pending_route"] = clicked_route_id
 
             st.rerun()
+
+    # Roadmap Assistant: báo cáo theo quận cho TP.HCM
+    if tab == "Roadmap Assistant":
+        if not has_city:
+            st.info("Chọn city ở sidebar để xem Roadmap Assistant.")
+            return
+
+        if city != "HoChiMinh":
+            st.warning("Khu vực chưa được support")
+            return
+
+        selected_district = zone if zone not in (None, "(All)") else None
+
+        st.header("📍 Roadmap Assistant – Report by District (2h tới)")
+
+        if not selected_district:
+            st.info("Hãy chọn Quận/Huyện trong mục Zone để xem báo cáo chi tiết.")
+            return
+
+        df_high, df_low, suggestions = compute_hcmc_district_report(selected_district)
+        if df_high is None and df_low is None:
+            st.warning("Không tìm thấy dữ liệu dự báo cho quận đã chọn.")
+            return
+
+        st.subheader(f"Quận/Huyện: {selected_district}")
+
+        if df_high is not None and not df_high.empty:
+            df_high_display = df_high.copy()
+            df_high_display["p_peak (%)"] = (df_high_display["p_peak"] * 100).round(1)
+            df_high_display["p_mean (%)"] = (df_high_display["p_mean"] * 100).round(1)
+            df_high_display = df_high_display[
+                ["route_name", "route_id", "p_peak (%)", "level", "t_peak", "p_mean (%)"]
+            ]
+            st.markdown("### Tuyến có khả năng kẹt (2h tới)")
+            st.dataframe(df_high_display, use_container_width=True)
+        else:
+            st.info("Không có tuyến nguy cơ cao/trung bình trong 2 giờ tới.")
+
+        if df_low is not None and not df_low.empty:
+            df_low_display = df_low.copy()
+            df_low_display["p_peak (%)"] = (df_low_display["p_peak"] * 100).round(1)
+            df_low_display["p_mean (%)"] = (df_low_display["p_mean"] * 100).round(1)
+            df_low_display = df_low_display[
+                ["route_name", "route_id", "p_peak (%)", "p_mean (%)"]
+            ]
+            st.markdown("### Tuyến thông thoáng (2h tới)")
+            st.dataframe(df_low_display, use_container_width=True)
+        else:
+            st.info("Không có tuyến thực sự thông thoáng (p_peak ≤ 0.3).")
+
+        avoid_list = (suggestions or {}).get("avoid") if suggestions else []
+        prefer_list = (suggestions or {}).get("prefer") if suggestions else []
+
+        st.markdown("### Gợi ý lộ trình")
+        avoid_text = " • " + "\n • ".join(avoid_list) if avoid_list else "Không có tuyến nguy cơ cao." 
+        prefer_text = " • " + "\n • ".join(prefer_list) if prefer_list else "Ưu tiên các tuyến còn lại trong danh sách thông thoáng." 
+        st.markdown(
+            f"""
+**Nên tránh:**
+{avoid_text}
+
+**Nên ưu tiên:**
+{prefer_text}
+"""
+        )
+        return
     if route_id:
         display_name = route_id
         if city == "HoChiMinh":
@@ -1980,9 +2157,7 @@ def main():
                             height=320,
                             title=f"Dự báo cho {vn_weekday_label(day_start)}",
                         )
-                        st.altair_chart(chart, use_container_width=True)
-            else:
-                st.info("Không có ngày nào trong forecast.")
+        st.altair_chart(chart, use_container_width=True)
 
     # ====================================
     # 8) DAILY TRAFFIC – 3 THÁNG GẦN NHẤT
