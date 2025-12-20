@@ -1286,6 +1286,90 @@ def _list_hcmc_districts(routes_geo_df: pd.DataFrame) -> list[str]:
 
 
 @st.cache_data(ttl=600)
+def load_hcmc_district_centers() -> list[dict]:
+    """Load danh sách tọa độ trung tâm quận từ geojson."""
+
+    path = Path(BASE_DIR) / "data" / "geo" / "hcmc_district_centers.geojson"
+    if not path.exists():
+        return []
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    centers: list[dict] = []
+    for feat in data.get("features", []):
+        props = feat.get("properties", {}) or {}
+        if str(props.get("city")) != "HoChiMinh":
+            continue
+
+        district = str(props.get("district") or "").strip()
+        if not district:
+            continue
+
+        lat = props.get("district_lat")
+        lon = props.get("district_lon")
+
+        if (lat is None or lon is None) and feat.get("geometry", {}).get("coordinates"):
+            coords = feat["geometry"].get("coordinates")
+            if isinstance(coords, (list, tuple)) and len(coords) >= 2:
+                lon, lat = coords[0], coords[1]
+
+        try:
+            lat = float(lat)
+            lon = float(lon)
+        except (TypeError, ValueError):
+            continue
+
+        centers.append({"district": district, "lat": lat, "lon": lon})
+
+    return centers
+
+
+def _get_hcmc_district_center(district: str) -> dict | None:
+    centers = load_hcmc_district_centers()
+    for c in centers:
+        if c.get("district") == district:
+            return c
+    return None
+
+
+def build_district_focus_bounds(df_routes: pd.DataFrame, center: dict | None):
+    lats: list[float] = []
+    lons: list[float] = []
+
+    if center:
+        lats.append(center.get("lat"))
+        lons.append(center.get("lon"))
+
+    for _, row in df_routes.iterrows():
+        try:
+            lat = float(row.get("lat"))
+            lon = float(row.get("lon"))
+        except (TypeError, ValueError):
+            continue
+
+        lats.append(lat)
+        lons.append(lon)
+
+    lats = [v for v in lats if pd.notna(v)]
+    lons = [v for v in lons if pd.notna(v)]
+
+    if not lats or not lons:
+        return None
+
+    min_lat, max_lat = min(lats), max(lats)
+    min_lon, max_lon = min(lons), max(lons)
+
+    padding = 0.01
+    return [
+        [min_lat - padding, min_lon - padding],
+        [max_lat + padding, max_lon + padding],
+    ]
+
+
+@st.cache_data(ttl=600)
 def compute_hcmc_district_report(district: str):
     routes_geo_all = load_routes_geo().fillna("")
     df_city = routes_geo_all[routes_geo_all["city"] == "HoChiMinh"].copy()
@@ -1668,7 +1752,31 @@ def main():
 
     routes_geo_all = load_routes_geo().fillna("")
 
-    df_geo_city = routes_geo_all[routes_geo_all["city"] == city].copy()
+    focus_bounds = None
+    district_center_marker = None
+
+    df_geo_city = (
+        routes_geo_all[routes_geo_all["city"] == city].copy()
+        if city
+        else pd.DataFrame()
+    )
+
+    should_focus_district = (
+        tab == "Roadmap Assistant"
+        and city == "HoChiMinh"
+        and zone not in (None, "(All)")
+    )
+
+    if should_focus_district and not df_geo_city.empty:
+        mask_district = df_geo_city["district"].apply(
+            lambda v: zone in _flatten_districts(v)
+        )
+        df_geo_city = df_geo_city[mask_district].copy()
+        district_center_marker = _get_hcmc_district_center(zone)
+        focus_bounds = build_district_focus_bounds(
+            df_geo_city, district_center_marker
+        )
+
     routes_data = df_geo_city.to_dict("records")
     df_all_geo = routes_geo_all.dropna(subset=["lat", "lon"]).copy()
     all_routes_list = df_all_geo.to_dict("records")
@@ -1677,6 +1785,8 @@ def main():
         routes_data=routes_data,
         selected_route_id=route_id,
         all_routes=all_routes_list,
+        focus_bounds=focus_bounds,
+        district_center=district_center_marker,
         key="traffic_map",
     )
 

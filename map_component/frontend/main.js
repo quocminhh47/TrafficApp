@@ -35,7 +35,7 @@ let markersGroup = null;
 let markersById = {};
 let globalBounds = null;
 let resetAdded = false;
-let legendAdded = false;
+let legendControl = null;
 let firstRender = true;
 
 function ensureMap() {
@@ -51,9 +51,9 @@ function ensureMap() {
   }
 }
 
-function getIcon(isSelected) {
+function getIcon(isSelected, baseColor = "#3388ff", selectedColor = "#ff3333") {
   const size = isSelected ? 40 : 28;
-  const color = isSelected ? "#ff3333" : "#3388ff";
+  const color = isSelected ? selectedColor : baseColor;
 
   return L.divIcon({
     html: `
@@ -98,6 +98,33 @@ function computeBounds(list) {
   );
 }
 
+function boundsFromArray(boundsArr) {
+  if (!Array.isArray(boundsArr) || boundsArr.length !== 2) return null;
+  const [sw, ne] = boundsArr;
+  if (
+    !Array.isArray(sw) ||
+    !Array.isArray(ne) ||
+    sw.length !== 2 ||
+    ne.length !== 2
+  ) {
+    return null;
+  }
+
+  const [minLat, minLon] = sw.map(Number);
+  const [maxLat, maxLon] = ne.map(Number);
+
+  if (
+    !Number.isFinite(minLat) ||
+    !Number.isFinite(minLon) ||
+    !Number.isFinite(maxLat) ||
+    !Number.isFinite(maxLon)
+  ) {
+    return null;
+  }
+
+  return L.latLngBounds(L.latLng(minLat, minLon), L.latLng(maxLat, maxLon));
+}
+
 function addResetButton() {
   if (resetAdded || !map) return;
 
@@ -121,46 +148,35 @@ function addResetButton() {
   resetAdded = true;
 }
 
-function addLegend() {
-  if (legendAdded || !map) return;
-
-  const legend = L.control({ position: "bottomleft" });
-
-  legend.onAdd = function () {
-    const div = L.DomUtil.create("div", "traffic-legend");
-    div.innerHTML = `
-      <div style="background: rgba(255,255,255,0.9); padding:6px 10px; border-radius:8px; font-size:12px; box-shadow: 0 1px 3px rgba(0,0,0,0.25);">
-        <div style="margin-bottom:2px;">
-          <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#ff3333;margin-right:4px;border:1px solid #fff;"></span>
-          Tuyến đang chọn
-        </div>
-        <div>
-          <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#3388ff;margin-right:4px;border:1px solid #fff;"></span>
-          Tuyến khác
-        </div>
-      </div>
-    `;
-    return div;
-  };
-
-  legend.addTo(map);
-  legendAdded = true;
-}
-
-
-function updateMarkers(routesData, selectedRouteId, allRoutes) {
+function updateMarkers(
+  routesData,
+  selectedRouteId,
+  allRoutes,
+  focusBoundsArr,
+  districtCenter
+) {
   ensureMap();
 
-  // Luôn vẽ marker cho TẤT CẢ các route (nhiều city)
-  const list = (allRoutes && allRoutes.length > 0)
-    ? allRoutes
-    : (routesData || []);
+  const list = routesData && routesData.length > 0
+    ? routesData
+    : (allRoutes || []);
 
   markersGroup.clearLayers();
   markersById = {};
 
-  // Global bounds tính trên toàn bộ marker
-  globalBounds = computeBounds(list);
+  // Global bounds tính trên toàn bộ marker (để Reset View hiển thị lại tất cả)
+  const allBoundsList = allRoutes && allRoutes.length > 0 ? allRoutes : list;
+  globalBounds = computeBounds(allBoundsList);
+
+  const currentBounds = computeBounds(list);
+  const focusBounds = boundsFromArray(focusBoundsArr) || currentBounds || globalBounds;
+  const hasDistrictCenter =
+    districtCenter &&
+    Number.isFinite(Number(districtCenter.lat)) &&
+    Number.isFinite(Number(districtCenter.lon));
+
+  const baseColor = hasDistrictCenter ? "#2ecc71" : "#3388ff";
+  const selectedColor = hasDistrictCenter ? "#1b8a5a" : "#ff3333";
 
   list.forEach((r) => {
     const lat = Number(r.lat);
@@ -170,7 +186,9 @@ function updateMarkers(routesData, selectedRouteId, allRoutes) {
     const routeId = r.route_id;
     const selected = routeId === selectedRouteId;
 
-    const marker = L.marker([lat, lon], { icon: getIcon(selected) });
+    const marker = L.marker([lat, lon], {
+      icon: getIcon(selected, baseColor, selectedColor),
+    });
 
     const name = r.name || routeId;
     const tooltipContent = `
@@ -193,36 +211,89 @@ function updateMarkers(routesData, selectedRouteId, allRoutes) {
       // highlight marker được chọn
       Object.entries(markersById).forEach(([rid, m]) => {
         const sel = rid === routeId;
-        m.setIcon(getIcon(sel));
+        m.setIcon(getIcon(sel, baseColor, selectedColor));
       });
 
-      map.setView([lat, lon], 15);
+      map.setView([lat, lon], 14);
     });
 
     marker.addTo(markersGroup);
     markersById[routeId] = marker;
   });
 
+  if (hasDistrictCenter) {
+    const lat = Number(districtCenter.lat);
+    const lon = Number(districtCenter.lon);
+    const marker = L.marker([lat, lon], {
+      icon: getIcon(true, "#ff4b4b", "#ff4b4b"),
+    });
+
+    marker.bindTooltip(
+      `<div><b>${districtCenter.district || "Trung tâm quận"}</b></div>`,
+      { direction: "top", offset: [0, -30] }
+    );
+
+    marker.addTo(markersGroup);
+  }
+
   // Điều khiển view
   if (selectedRouteId && markersById[selectedRouteId]) {
-    // Có route đang chọn → zoom vào luôn
     const latlng = markersById[selectedRouteId].getLatLng();
-    map.setView(latlng, 15);
+    map.setView(latlng, 14);
+    firstRender = false;
+  } else if (focusBounds) {
+    map.fitBounds(focusBounds, { padding: [80, 80], maxZoom: 14 });
     firstRender = false;
   } else if (firstRender) {
-    // Lần đầu chưa có route → overview tất cả
     if (globalBounds) {
       map.fitBounds(globalBounds, { padding: [80, 80] });
     }
     firstRender = false;
   } else if (globalBounds) {
-    // Fallback: overview
     map.fitBounds(globalBounds, { padding: [80, 80] });
   }
 
-
   addResetButton();
-  addLegend();
+  if (legendControl) {
+    legendControl.remove();
+  }
+
+  legendControl = L.control({ position: "bottomleft", hasDistrictCenter });
+  legendControl.onAdd = function () {
+    const div = L.DomUtil.create("div", "traffic-legend");
+    const commonWrapper =
+      "background: rgba(255,255,255,0.9); padding:6px 10px; border-radius:8px; font-size:12px; box-shadow: 0 1px 3px rgba(0,0,0,0.25);";
+
+    if (hasDistrictCenter) {
+      div.innerHTML = `
+        <div style="${commonWrapper}">
+          <div style="margin-bottom:2px;">
+            <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#ff4b4b;margin-right:4px;border:1px solid #fff;"></span>
+            Trung tâm quận
+          </div>
+          <div>
+            <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#2ecc71;margin-right:4px;border:1px solid #fff;"></span>
+            Tuyến trong quận
+          </div>
+        </div>`;
+      return div;
+    }
+
+    div.innerHTML = `
+      <div style="${commonWrapper}">
+        <div style="margin-bottom:2px;">
+          <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#ff3333;margin-right:4px;border:1px solid #fff;"></span>
+          Tuyến đang chọn
+        </div>
+        <div>
+          <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#3388ff;margin-right:4px;border:1px solid #fff;"></span>
+          Tuyến khác
+        </div>
+      </div>`;
+    return div;
+  };
+
+  legendControl.addTo(map);
 }
 
 function createMarker(lat, lon, isSelected, routeId, name) {
@@ -252,8 +323,10 @@ function handleRender(args) {
   const routesData = args.data || [];
   const selectedRouteId = args.selected_route_id || null;
   const allRoutes = args.all_routes || [];
+  const focusBoundsArr = args.focus_bounds || null;
+  const districtCenter = args.district_center || null;
 
-  updateMarkers(routesData, selectedRouteId, allRoutes);
+  updateMarkers(routesData, selectedRouteId, allRoutes, focusBoundsArr, districtCenter);
 
   const h =
     document.getElementById("map")?.getBoundingClientRect()?.height || 500;

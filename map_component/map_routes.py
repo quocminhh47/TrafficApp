@@ -23,7 +23,15 @@ else:
     )
 
 
-def map_routes(routes_data, selected_route_id, all_routes=None, key=None):
+def map_routes(
+    routes_data,
+    selected_route_id,
+    all_routes=None,
+    *,
+    focus_bounds=None,
+    district_center=None,
+    key=None,
+):
     """
     Hiển thị bản đồ các tuyến đường (routes) với custom Leaflet frontend.
 
@@ -53,6 +61,8 @@ def map_routes(routes_data, selected_route_id, all_routes=None, key=None):
         data=routes_data,
         selected_route_id=selected_route_id,
         all_routes=all_routes,  # << gửi thêm xuống frontend
+        focus_bounds=focus_bounds,
+        district_center=district_center,
         key=key,
         default=None,
     )
