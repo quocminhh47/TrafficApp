@@ -7,6 +7,7 @@ from pathlib import Path
 import joblib
 import json
 import os
+import urllib.parse
 
 from functools import lru_cache
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
@@ -1272,6 +1273,18 @@ def _flatten_districts(value) -> list[str]:
     return [str(value).strip()]
 
 
+def _build_forecast_link(route_id: str, route_name: str, district: str) -> str:
+    params = {
+        "city": "HoChiMinh",
+        "zone": district,
+        "route_id": route_id,
+        "option": "FORECAST",
+    }
+    query = urllib.parse.urlencode(params)
+    safe_name = route_name or route_id
+    return f'<a href="/?{query}" target="_blank">{safe_name}</a>'
+
+
 def _list_hcmc_districts(routes_geo_df: pd.DataFrame) -> list[str]:
     df_city = routes_geo_df[routes_geo_df["city"] == "HoChiMinh"].copy()
     if df_city.empty:
@@ -1453,7 +1466,7 @@ def compute_hcmc_district_report(district: str):
         "prefer": prefer_suggest,
     }
 
-    return df_congested, df_free, suggestions
+    return df_congested, df_free, suggestions, df_res
 
 
 # ======================================================
@@ -1465,6 +1478,25 @@ def main():
 
     st.set_page_config(page_title="Traffic Forecast App", layout="wide")
     st.title(" Traffic Forecast App ")
+
+    if not st.session_state.get("query_params_applied"):
+        params = st.experimental_get_query_params()
+
+        qp_city = (params.get("city") or [None])[0]
+        qp_zone = (params.get("zone") or [None])[0]
+        qp_route = (params.get("route") or params.get("route_id") or [None])[0]
+        qp_option = (params.get("option") or [None])[0]
+
+        if qp_city:
+            st.session_state["city"] = qp_city
+        if qp_zone:
+            st.session_state["zone"] = qp_zone
+        if qp_route:
+            st.session_state["route"] = qp_route
+        if qp_option:
+            st.session_state["option_tab"] = qp_option
+
+        st.session_state["query_params_applied"] = True
 
     # Apply pending selection từ map (trước khi tạo widget)
     if "pending_city" in st.session_state:
@@ -1626,8 +1658,13 @@ def main():
 
 
     # ----- OPTIONS -----
+    if "option_tab" not in st.session_state:
+        st.session_state["option_tab"] = "FORECAST"
+
     tab = st.sidebar.radio(
-        "Options", ["FORECAST", "METRICS AND EVALUATION", "Roadmap Assistant"]
+        "Options",
+        ["FORECAST", "METRICS AND EVALUATION", "Roadmap Assistant"],
+        key="option_tab",
     )
 
     # ====================================
@@ -1827,43 +1864,29 @@ def main():
             st.info("Hãy chọn Quận/Huyện trong mục Zone để xem báo cáo chi tiết.")
             return
 
-        df_high, df_low, suggestions = compute_hcmc_district_report(selected_district)
+        df_high, df_low, suggestions, df_all = compute_hcmc_district_report(
+            selected_district
+        )
         if df_high is None and df_low is None:
             st.warning("Không tìm thấy dữ liệu dự báo cho quận đã chọn.")
             return
 
         st.subheader(f"Quận/Huyện: {selected_district}")
 
-        if df_high is not None and not df_high.empty:
-            df_high_display = df_high.copy()
-            df_high_display["p_peak (%)"] = (df_high_display["p_peak"] * 100).round(1)
-            df_high_display["p_mean (%)"] = (df_high_display["p_mean"] * 100).round(1)
-            df_high_display = df_high_display[
-                ["route_name", "route_id", "p_peak (%)", "level", "t_peak", "p_mean (%)"]
-            ]
-            st.markdown("### Tuyến có khả năng kẹt (2h tới)")
-            st.dataframe(df_high_display, use_container_width=True)
-        else:
-            st.info("Không có tuyến nguy cơ cao/trung bình trong 2 giờ tới.")
-
-        if df_low is not None and not df_low.empty:
-            df_low_display = df_low.copy()
-            df_low_display["p_peak (%)"] = (df_low_display["p_peak"] * 100).round(1)
-            df_low_display["p_mean (%)"] = (df_low_display["p_mean"] * 100).round(1)
-            df_low_display = df_low_display[
-                ["route_name", "route_id", "p_peak (%)", "p_mean (%)"]
-            ]
-            st.markdown("### Tuyến thông thoáng (2h tới)")
-            st.dataframe(df_low_display, use_container_width=True)
-        else:
-            st.info("Không có tuyến thực sự thông thoáng (p_peak ≤ 0.3).")
-
         avoid_list = (suggestions or {}).get("avoid") if suggestions else []
         prefer_list = (suggestions or {}).get("prefer") if suggestions else []
 
-        st.markdown("### Gợi ý lộ trình")
-        avoid_text = " • " + "\n • ".join(avoid_list) if avoid_list else "Không có tuyến nguy cơ cao." 
-        prefer_text = " • " + "\n • ".join(prefer_list) if prefer_list else "Ưu tiên các tuyến còn lại trong danh sách thông thoáng." 
+        st.markdown("### 🚗 Gợi ý lộ trình")
+        avoid_text = (
+            " • " + "\n • ".join(avoid_list)
+            if avoid_list
+            else "Không có tuyến nguy cơ cao."
+        )
+        prefer_text = (
+            " • " + "\n • ".join(prefer_list)
+            if prefer_list
+            else "Ưu tiên các tuyến còn lại trong quận."
+        )
         st.markdown(
             f"""
 **Nên tránh:**
@@ -1873,6 +1896,57 @@ def main():
 {prefer_text}
 """
         )
+
+        if df_high is not None and not df_high.empty:
+            df_high_display = df_high.copy()
+            df_high_display["p_peak (%)"] = (df_high_display["p_peak"] * 100).round(1)
+            df_high_display["p_mean (%)"] = (df_high_display["p_mean"] * 100).round(1)
+            df_high_display["Tuyến (mở dự báo)"] = df_high_display.apply(
+                lambda r: _build_forecast_link(
+                    r["route_id"], r["route_name"], selected_district
+                ),
+                axis=1,
+            )
+            df_high_display = df_high_display[
+                [
+                    "Tuyến (mở dự báo)",
+                    "route_id",
+                    "p_peak (%)",
+                    "level",
+                    "t_peak",
+                    "p_mean (%)",
+                ]
+            ]
+            st.markdown("### 🚦 Đường dễ kẹt trong 2 giờ tới")
+            st.markdown(
+                df_high_display.to_html(escape=False, index=False),
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("Không có tuyến nguy cơ cao hoặc trung bình trong 2 giờ tới.")
+
+        if df_low is not None and not df_low.empty:
+            df_low_display = df_low.copy()
+            df_low_display["p_peak (%)"] = (df_low_display["p_peak"] * 100).round(1)
+            df_low_display["p_mean (%)"] = (df_low_display["p_mean"] * 100).round(1)
+            df_low_display["Tuyến (mở dự báo)"] = df_low_display.apply(
+                lambda r: _build_forecast_link(
+                    r["route_id"], r["route_name"], selected_district
+                ),
+                axis=1,
+            )
+            df_low_display = df_low_display[
+                ["Tuyến (mở dự báo)", "route_id", "p_peak (%)", "p_mean (%)"]
+            ]
+            st.markdown("### 🛣️ Các tuyến khác trong quận")
+            st.markdown(
+                df_low_display.to_html(escape=False, index=False),
+                unsafe_allow_html=True,
+            )
+        elif df_all is not None and not df_all.empty:
+            st.info("Các tuyến còn lại trong quận đang ở mức rủi ro trung bình/nhẹ.")
+        else:
+            st.info("Không có tuyến khác để hiển thị trong quận này.")
         return
     if route_id:
         display_name = route_id
