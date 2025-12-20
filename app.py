@@ -1541,6 +1541,11 @@ def main():
             HORIZON = None
 
 
+    # ----- OPTIONS -----
+    tab = st.sidebar.radio(
+        "Options", ["FORECAST", "METRICS AND EVALUATION", "Roadmap Assistant"]
+    )
+
     # ====================================
     # 3) ROUTE (sidebar)
     # ====================================
@@ -1548,6 +1553,7 @@ def main():
 
     # luôn khai báo raw_routes, kể cả khi chưa chọn city
     raw_routes = []
+    route_disabled = tab == "Roadmap Assistant"
 
     if not has_city:
         # Chưa chọn city → disable route
@@ -1591,6 +1597,7 @@ def main():
                     "Route",
                     options,
                     key="route",
+                    disabled=route_disabled,
                     format_func=lambda rid: (
                         id2name.get(rid, rid)
                         if rid != ROUTE_PLACEHOLDER
@@ -1619,9 +1626,12 @@ def main():
                 "Route",
                 route_options,
                 key="route",
-                disabled=False,
+                disabled=route_disabled,
             )
             route_id = None if route_selected == ROUTE_PLACEHOLDER else route_selected
+
+    if route_disabled:
+        route_id = None
 
     # ====================================
     # 4) TOP-2 MODELS (cho ensemble forecast)
@@ -1650,11 +1660,6 @@ def main():
     else:
         # Chưa chọn city/route → chưa show gì, chỉ map + message "chọn route"
         pass
-
-    # ----- OPTIONS -----
-    tab = st.sidebar.radio(
-        "Options", ["FORECAST", "METRICS AND EVALUATION", "Roadmap Assistant"]
-    )
 
     # ====================================
     # 5) MAP COMPONENT
