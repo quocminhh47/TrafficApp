@@ -165,6 +165,11 @@ function updateMarkers(
 
   const hasRiskLevels = list.some((r) => (r.level || "").toString().length > 0);
 
+  const hasDistrictCenter =
+    districtCenter &&
+    Number.isFinite(Number(districtCenter.lat)) &&
+    Number.isFinite(Number(districtCenter.lon));
+
   markersGroup.clearLayers();
   markersById = {};
 
@@ -184,10 +189,6 @@ function updateMarkers(
 
   const currentBounds = computeBounds(list);
   const focusBounds = boundsFromArray(focusBoundsArr) || currentBounds || globalBounds;
-  const hasDistrictCenter =
-    districtCenter &&
-    Number.isFinite(Number(districtCenter.lat)) &&
-    Number.isFinite(Number(districtCenter.lon));
 
   const riskBaseColors = {
     high: "#e74c3c", // đỏ
