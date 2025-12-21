@@ -136,7 +136,9 @@ function addResetButton() {
 
       L.DomEvent.on(btn, "click", () => {
         if (globalBounds) {
-          map.fitBounds(globalBounds, { padding: [80, 80] });
+          map.fitBounds(globalBounds, { padding: [100, 100] });
+        } else if (markersGroup && markersGroup.getLayers().length > 0) {
+          map.fitBounds(markersGroup.getBounds(), { padding: [100, 100] });
         }
       });
 
@@ -167,8 +169,18 @@ function updateMarkers(
   markersById = {};
 
   // Global bounds tính trên toàn bộ marker (để Reset View hiển thị lại tất cả)
-  const allBoundsList = allRoutes && allRoutes.length > 0 ? allRoutes : list;
-  globalBounds = computeBounds(allBoundsList);
+  const allBoundsList =
+    allRoutes && allRoutes.length > 0 ? [...allRoutes] : [...list];
+
+  if (hasDistrictCenter) {
+    allBoundsList.push({ lat: districtCenter.lat, lon: districtCenter.lon });
+  }
+
+  globalBounds =
+    computeBounds(allBoundsList) ||
+    (markersGroup && markersGroup.getLayers().length > 0
+      ? markersGroup.getBounds()
+      : null);
 
   const currentBounds = computeBounds(list);
   const focusBounds = boundsFromArray(focusBoundsArr) || currentBounds || globalBounds;
