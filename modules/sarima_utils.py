@@ -45,8 +45,9 @@ def forecast_sarima_for_day(
         .interpolate(limit_direction="both")
     )
 
-    # Train = toàn bộ history trước day_start
-    train = s[s.index < day_start]
+    MAX_TRAIN_HOURS = 24 * 14  # 14 ngày
+    train = s[s.index < day_start].iloc[-MAX_TRAIN_HOURS:]
+
     if len(train) < 24:
         return None, f"Không đủ history cho SARIMA (len={len(train)})"
 
@@ -56,9 +57,11 @@ def forecast_sarima_for_day(
 
     # Dùng SARIMAX với bộ tham số cố định (nhẹ hơn auto_arima rất nhiều)
     # Bạn có thể chỉnh order/seasonal_order nếu muốn.
-    order = (1, 0, 1)
+    #order = (1, 0, 1)
+    order = (1, 0, 0) # AR(1)
     if seasonal:
-        seasonal_order = (1, 1, 1, m)  # m = 24 (daily seasonality) hoặc 168 nếu weekly
+        #seasonal_order = (1, 1, 1, m)  # m = 24 (daily seasonality) hoặc 168 nếu weekly
+        seasonal_order = (0, 1, 1, m)  # m = 24 (daily seasonality) hoặc 168 nếu weekly
     else:
         seasonal_order = (0, 0, 0, 0)
 
