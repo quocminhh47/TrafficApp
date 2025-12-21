@@ -159,11 +159,38 @@ function updateMarkers(
 ) {
   ensureMap();
 
-  const list = routesData && routesData.length > 0
-    ? routesData
-    : (allRoutes || []);
+  const baseRiskList = routesData && routesData.length > 0 ? routesData : [];
+  const riskLookup = new Map();
+  baseRiskList.forEach((r) => {
+    const rid = String(r.route_id || r.id || "");
+    if (rid) {
+      riskLookup.set(rid, r);
+    }
+  });
 
-  const hasRiskLevels = list.some((r) => (r.level || "").toString().length > 0);
+  const baseList = allRoutes && allRoutes.length > 0 ? allRoutes : baseRiskList;
+  const mergedList = baseList.map((r) => {
+    const rid = String(r.route_id || r.id || "");
+    const risk = rid ? riskLookup.get(rid) : null;
+    if (risk) {
+      return { ...r, level: risk.level ?? r.level, p_peak: risk.p_peak ?? r.p_peak };
+    }
+    return r;
+  });
+
+  // Bổ sung route có risk nhưng chưa nằm trong baseList (hiếm)
+  baseRiskList.forEach((r) => {
+    const rid = String(r.route_id || r.id || "");
+    if (!rid) return;
+    const exists = mergedList.some((item) => String(item.route_id || item.id || "") === rid);
+    if (!exists) {
+      mergedList.push(r);
+    }
+  });
+
+  const hasRiskLevels = baseRiskList.some((r) => (r.level || "").toString().length > 0);
+
+  const list = mergedList;
 
   const hasDistrictCenter =
     districtCenter &&
@@ -174,8 +201,7 @@ function updateMarkers(
   markersById = {};
 
   // Global bounds tính trên toàn bộ marker (để Reset View hiển thị lại tất cả)
-  const allBoundsList =
-    allRoutes && allRoutes.length > 0 ? [...allRoutes] : [...list];
+  const allBoundsList = list && list.length > 0 ? [...list] : [];
 
   if (hasDistrictCenter) {
     allBoundsList.push({ lat: districtCenter.lat, lon: districtCenter.lon });
@@ -187,7 +213,7 @@ function updateMarkers(
       ? markersGroup.getBounds()
       : null);
 
-  const currentBounds = computeBounds(list);
+  const currentBounds = computeBounds(baseRiskList.length > 0 ? baseRiskList : list);
   const focusBounds = boundsFromArray(focusBoundsArr) || currentBounds || globalBounds;
 
   const riskBaseColors = {
