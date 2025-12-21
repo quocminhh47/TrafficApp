@@ -161,6 +161,8 @@ function updateMarkers(
     ? routesData
     : (allRoutes || []);
 
+  const hasRiskLevels = list.some((r) => (r.level || "").toString().length > 0);
+
   markersGroup.clearLayers();
   markersById = {};
 
@@ -175,8 +177,20 @@ function updateMarkers(
     Number.isFinite(Number(districtCenter.lat)) &&
     Number.isFinite(Number(districtCenter.lon));
 
-  const baseColor = hasDistrictCenter ? "#2ecc71" : "#3388ff";
-  const selectedColor = hasDistrictCenter ? "#1b8a5a" : "#ff3333";
+  const riskBaseColors = {
+    high: "#e74c3c", // đỏ
+    medium: "#f1c40f", // vàng
+    low: "#2ecc71", // xanh lá
+  };
+
+  const riskSelectedColors = {
+    high: "#c0392b",
+    medium: "#d4ac0d",
+    low: "#1e8449",
+  };
+
+  const defaultBaseColor = hasDistrictCenter ? "#3388ff" : "#3388ff";
+  const defaultSelectedColor = hasDistrictCenter ? "#1b8a5a" : "#ff3333";
 
   list.forEach((r) => {
     const lat = Number(r.lat);
@@ -184,6 +198,10 @@ function updateMarkers(
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
 
     const routeId = r.route_id;
+    const level = (r.level || "").toString().toLowerCase();
+
+    const baseColor = riskBaseColors[level] || defaultBaseColor;
+    const selectedColor = riskSelectedColors[level] || defaultSelectedColor;
     const selected = routeId === selectedRouteId;
 
     const marker = L.marker([lat, lon], {
@@ -225,7 +243,7 @@ function updateMarkers(
     const lat = Number(districtCenter.lat);
     const lon = Number(districtCenter.lon);
     const marker = L.marker([lat, lon], {
-      icon: getIcon(true, "#ff4b4b", "#ff4b4b"),
+      icon: getIcon(true, "#3498db", "#3498db"),
     });
 
     marker.bindTooltip(
@@ -258,7 +276,11 @@ function updateMarkers(
     legendControl.remove();
   }
 
-  legendControl = L.control({ position: "bottomleft", hasDistrictCenter });
+  legendControl = L.control({
+    position: "bottomleft",
+    hasDistrictCenter,
+    hasRiskLevels,
+  });
   legendControl.onAdd = function () {
     const div = L.DomUtil.create("div", "traffic-legend");
     const commonWrapper =
@@ -268,13 +290,34 @@ function updateMarkers(
       div.innerHTML = `
         <div style="${commonWrapper}">
           <div style="margin-bottom:2px;">
-            <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#ff4b4b;margin-right:4px;border:1px solid #fff;"></span>
+            <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#3498db;margin-right:4px;border:1px solid #fff;"></span>
             Trung tâm quận
           </div>
-          <div>
-            <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#2ecc71;margin-right:4px;border:1px solid #fff;"></span>
-            Tuyến trong quận
-          </div>
+          ${
+            hasRiskLevels
+              ? `
+                <div style="margin-top:2px;">
+                  <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#e74c3c;margin-right:4px;border:1px solid #fff;"></span>
+                  Tuyến rủi ro cao
+                </div>
+                <div style="margin-top:2px;">
+                  <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#f1c40f;margin-right:4px;border:1px solid #fff;"></span>
+                  Tuyến rủi ro trung bình
+                </div>
+                <div style="margin-top:2px;">
+                  <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#2ecc71;margin-right:4px;border:1px solid #fff;"></span>
+                  Tuyến rủi ro thấp
+                </div>
+                <div style="margin-top:2px;">
+                  <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#3388ff;margin-right:4px;border:1px solid #fff;"></span>
+                  Tuyến chưa có nhãn rủi ro
+                </div>`
+              : `
+                <div style="margin-top:2px;">
+                  <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#3388ff;margin-right:4px;border:1px solid #fff;"></span>
+                  Tuyến trong quận
+                </div>`
+          }
         </div>`;
       return div;
     }

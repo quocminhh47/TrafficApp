@@ -1625,6 +1625,8 @@ def main():
     LOOKBACK = None
     HORIZON = None
 
+    district_report = None
+
     if has_city:
         ctx = None
         zone_for_model = None if zone == "(All)" else zone
@@ -1772,6 +1774,13 @@ def main():
     if route_disabled:
         route_id = None
 
+    if (
+        tab == "Roadmap Assistant"
+        and city == "HoChiMinh"
+        and zone not in (None, "(All)")
+    ):
+        district_report = compute_hcmc_district_report(zone)
+
     # ====================================
     # 4) TOP-2 MODELS (cho ensemble forecast)
     # ====================================
@@ -1816,6 +1825,18 @@ def main():
         else pd.DataFrame()
     )
 
+    district_risk_lookup: dict[str, dict] = {}
+    if district_report and len(district_report) == 4:
+        df_all_levels = district_report[3]
+        if df_all_levels is not None:
+            district_risk_lookup = {
+                str(r["route_id"]): {
+                    "level": r.get("level"),
+                    "p_peak": r.get("p_peak"),
+                }
+                for _, r in df_all_levels.iterrows()
+            }
+
     should_focus_district = (
         tab == "Roadmap Assistant"
         and city == "HoChiMinh"
@@ -1827,6 +1848,13 @@ def main():
             lambda v: zone in _flatten_districts(v)
         )
         df_geo_city = df_geo_city[mask_district].copy()
+        if not df_geo_city.empty and district_risk_lookup:
+            df_geo_city = df_geo_city.copy()
+            df_geo_city["level"] = df_geo_city["route_id"].apply(
+                lambda rid: district_risk_lookup.get(str(rid), {}).get(
+                    "level", ""
+                )
+            )
         district_center_marker = _get_hcmc_district_center(zone)
         focus_bounds = build_district_focus_bounds(
             df_geo_city, district_center_marker
@@ -1882,9 +1910,16 @@ def main():
             st.info("Hãy chọn Quận/Huyện trong mục Zone để xem báo cáo chi tiết.")
             return
 
-        df_high, df_low, suggestions, df_all = compute_hcmc_district_report(
-            selected_district
-        )
+        if (
+            district_report
+            and len(district_report) == 4
+            and selected_district == zone
+        ):
+            df_high, df_low, suggestions, df_all = district_report
+        else:
+            df_high, df_low, suggestions, df_all = compute_hcmc_district_report(
+                selected_district
+            )
         if df_high is None and df_low is None:
             st.warning("Không tìm thấy dữ liệu dự báo cho quận đã chọn.")
             return
@@ -1915,6 +1950,8 @@ def main():
 """
         )
 
+        displayed_high_ids: set[str] = set()
+
         if df_high is not None and not df_high.empty:
             df_high_display = df_high.copy()
             df_high_display["p_peak (%)"] = (df_high_display["p_peak"] * 100).round(1)
@@ -1935,7 +1972,8 @@ def main():
                     "p_mean (%)",
                 ]
             ]
-            st.markdown("### 🚦 Đường dễ kẹt trong 2 giờ tới")
+            displayed_high_ids = set(df_high_display["route_id"].tolist())
+            st.markdown("### 🚦 Tuyến có nguy cơ kẹt (2 giờ tới)")
             st.markdown(
                 df_high_display.to_html(escape=False, index=False),
                 unsafe_allow_html=True,
@@ -1943,26 +1981,39 @@ def main():
         else:
             st.info("Không có tuyến nguy cơ cao hoặc trung bình trong 2 giờ tới.")
 
-        if df_low is not None and not df_low.empty:
-            df_low_display = df_low.copy()
-            df_low_display["p_peak (%)"] = (df_low_display["p_peak"] * 100).round(1)
-            df_low_display["p_mean (%)"] = (df_low_display["p_mean"] * 100).round(1)
-            df_low_display["Tuyến (mở dự báo)"] = df_low_display.apply(
+        df_other = None
+        if df_all is not None and not df_all.empty:
+            df_other = df_all.copy()
+            if displayed_high_ids:
+                df_other = df_other[~df_other["route_id"].isin(displayed_high_ids)]
+
+        if df_other is not None and not df_other.empty:
+            df_other_display = df_other.copy()
+            df_other_display["p_peak (%)"] = (df_other_display["p_peak"] * 100).round(1)
+            df_other_display["p_mean (%)"] = (df_other_display["p_mean"] * 100).round(1)
+            df_other_display["Tuyến (mở dự báo)"] = df_other_display.apply(
                 lambda r: _build_forecast_link(
                     r["route_id"], r["route_name"], selected_district
                 ),
                 axis=1,
             )
-            df_low_display = df_low_display[
-                ["Tuyến (mở dự báo)", "route_id", "p_peak (%)", "p_mean (%)"]
+            df_other_display = df_other_display[
+                [
+                    "Tuyến (mở dự báo)",
+                    "route_id",
+                    "level",
+                    "p_peak (%)",
+                    "t_peak",
+                    "p_mean (%)",
+                ]
             ]
-            st.markdown("### 🛣️ Các tuyến khác trong quận")
+            st.markdown("### 🛣️ Các tuyến khác trong quận (mức rủi ro còn lại)")
             st.markdown(
-                df_low_display.to_html(escape=False, index=False),
+                df_other_display.to_html(escape=False, index=False),
                 unsafe_allow_html=True,
             )
         elif df_all is not None and not df_all.empty:
-            st.info("Các tuyến còn lại trong quận đang ở mức rủi ro trung bình/nhẹ.")
+            st.info("Tất cả các tuyến trong quận đã được liệt kê ở bảng trên.")
         else:
             st.info("Không có tuyến khác để hiển thị trong quận này.")
         return
