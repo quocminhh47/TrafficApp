@@ -2814,67 +2814,83 @@ def main():
                 st.info("Không có series nào (GRU/RNN/LSTM/ARIMA/SARIMA) để hiển thị.")
 
             # ==== Metrics tổng Weekly cho từng model (nếu có cột) ====
-            metrics_rows = []
+            df_weekly = df_eval.copy()
+            df_weekly["Date"] = pd.to_datetime(df_weekly["Date"])
+            df_weekly["WeekStart"] = df_weekly["Date"].dt.to_period("W-MON").apply(lambda r: r.start_time)
+            df_weekly["WeekEnd"] = df_weekly["WeekStart"] + pd.Timedelta(days=6)
 
-            for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
-                col_name = f"Weekly_{m_name}"
-                if col_name not in df_weekly.columns:
-                    continue
+            daily_cols = [c for c in df_weekly.columns if c.startswith("Daily")]
+            agg_dict = {c: "sum" for c in daily_cols}
+            df_weekly = (
+                df_weekly.groupby(["WeekStart", "WeekEnd"])
+                .agg(agg_dict)
+                .reset_index()
+            )
+            df_weekly = df_weekly.rename(columns={c: c.replace("Daily", "Weekly") for c in daily_cols})
 
-                valid = df_weekly[["WeeklyActual", col_name]].dropna()
-                if valid.empty:
-                    continue
+            if not df_weekly.empty:
+                metrics_rows = []
 
-                actual = valid["WeeklyActual"].values.astype(float)
-                pred = valid[col_name].values.astype(float)
+                for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
+                    col_name = f"Weekly_{m_name}"
+                    if col_name not in df_weekly.columns:
+                        continue
 
-                # Sai số
-                mse = mean_squared_error(actual, pred)
-                rmse = np.sqrt(mse)
-                mae = mean_absolute_error(actual, pred)
+                    valid = df_weekly[["WeeklyActual", col_name]].dropna()
+                    if valid.empty:
+                        continue
 
-                mape = (
-                        np.mean(np.abs((actual - pred) / np.where(actual == 0, np.nan, actual))) * 100
-                )
+                    actual = valid["WeeklyActual"].values.astype(float)
+                    pred = valid[col_name].values.astype(float)
 
-                denom = np.abs(actual) + np.abs(pred)
-                smape = (
-                        np.mean(2.0 * np.abs(pred - actual) / np.where(denom == 0, 1.0, denom)) * 100
-                )
+                    # Sai số
+                    mse = mean_squared_error(actual, pred)
+                    rmse = np.sqrt(mse)
+                    mae = mean_absolute_error(actual, pred)
 
-                r2 = r2_score(actual, pred)
+                    mape = (
+                            np.mean(np.abs((actual - pred) / np.where(actual == 0, np.nan, actual))) * 100
+                    )
 
-                metrics_rows.append(
-                    {
-                        "Model": m_name,
-                        "MSE": mse,
-                        "RMSE": rmse,
-                        "MAE": mae,
-                        "MAPE (%)": mape,
-                        "SMAPE (%)": smape,
-                        "R²": r2,
-                    }
-                )
+                    denom = np.abs(actual) + np.abs(pred)
+                    smape = (
+                            np.mean(2.0 * np.abs(pred - actual) / np.where(denom == 0, 1.0, denom)) * 100
+                    )
 
-            if metrics_rows:
-                st.subheader("Đánh giá sai số theo từng model – dữ liệu Weekly (3 tháng gần nhất)")
-                df_metrics_weekly = pd.DataFrame(metrics_rows)
+                    r2 = r2_score(actual, pred)
 
-                for c in ["MSE", "RMSE", "MAE"]:
-                    df_metrics_weekly[c] = df_metrics_weekly[c].round(2)
-                for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
-                    df_metrics_weekly[c] = df_metrics_weekly[c].round(3)
+                    metrics_rows.append(
+                        {
+                            "Model": m_name,
+                            "MSE": mse,
+                            "RMSE": rmse,
+                            "MAE": mae,
+                            "MAPE (%)": mape,
+                            "SMAPE (%)": smape,
+                            "R²": r2,
+                        }
+                    )
 
-                # ---- Format số theo dạng 000,000,000.00 ----
-                format_cols = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
-                df_formatted_weekly = df_metrics_weekly.copy()
-                for c in ["MSE", "RMSE", "MAE"]:
-                    df_formatted_weekly[c] = df_formatted_weekly[c].apply(lambda x: f"{x:,.2f}")
-                for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
-                    df_formatted_weekly[c] = df_formatted_weekly[c].apply(lambda x: f"{x:,.3f}")
+                if metrics_rows:
+                    st.subheader("Đánh giá sai số theo từng model – dữ liệu Weekly (3 tháng gần nhất)")
+                    df_metrics_weekly = pd.DataFrame(metrics_rows)
 
-                st.dataframe(df_formatted_weekly, use_container_width=True)
+                    for c in ["MSE", "RMSE", "MAE"]:
+                        df_metrics_weekly[c] = df_metrics_weekly[c].round(2)
+                    for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
+                        df_metrics_weekly[c] = df_metrics_weekly[c].round(3)
 
+                    # ---- Format số theo dạng 000,000,000.00 ----
+                    format_cols = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
+                    df_formatted_weekly = df_metrics_weekly.copy()
+                    for c in ["MSE", "RMSE", "MAE"]:
+                        df_formatted_weekly[c] = df_formatted_weekly[c].apply(lambda x: f"{x:,.2f}")
+                    for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
+                        df_formatted_weekly[c] = df_formatted_weekly[c].apply(lambda x: f"{x:,.3f}")
+
+                    st.dataframe(df_formatted_weekly, use_container_width=True)
+                else:
+                    st.info("Không có dữ liệu Weekly để tính metrics.")
             else:
                 st.info("Không có dữ liệu Weekly để tính metrics.")
 
