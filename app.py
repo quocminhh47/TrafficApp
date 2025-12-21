@@ -1480,12 +1480,17 @@ def main():
     st.title(" Traffic Forecast App ")
 
     if not st.session_state.get("query_params_applied"):
-        params = st.experimental_get_query_params()
+        params = st.query_params
 
-        qp_city = (params.get("city") or [None])[0]
-        qp_zone = (params.get("zone") or [None])[0]
-        qp_route = (params.get("route") or params.get("route_id") or [None])[0]
-        qp_option = (params.get("option") or [None])[0]
+        def _first_qp(value):
+            if isinstance(value, list):
+                return value[0] if value else None
+            return value
+
+        qp_city = _first_qp(params.get("city"))
+        qp_zone = _first_qp(params.get("zone"))
+        qp_route = _first_qp(params.get("route") or params.get("route_id"))
+        qp_option = _first_qp(params.get("option"))
 
         if qp_city:
             st.session_state["city"] = qp_city
@@ -1534,6 +1539,23 @@ def main():
     has_city = city_selected != CITY_PLACEHOLDER
     current_city = city_selected if has_city else None
 
+    # ----- OPTIONS -----
+    if "option_tab" not in st.session_state:
+        st.session_state["option_tab"] = "FORECAST"
+
+    option_choices = ["FORECAST", "METRICS AND EVALUATION", "Roadmap Assistant"]
+    if has_city and current_city == "HoChiMinh":
+        option_choices = ["FORECAST", "Roadmap Assistant"]
+
+    if st.session_state.get("option_tab") not in option_choices:
+        st.session_state["option_tab"] = option_choices[0]
+
+    tab = st.sidebar.radio(
+        "Options",
+        option_choices,
+        key="option_tab",
+    )
+
     # ----- ZONE -----
     if not has_city:
         # Chưa chọn city → disable zone, dùng key khác (không phải "zone")
@@ -1550,8 +1572,12 @@ def main():
             routes_geo_all_sidebar = load_routes_geo().fillna("")
             hcmc_districts = _list_hcmc_districts(routes_geo_all_sidebar)
             zones = ["(All)"] + hcmc_districts if hcmc_districts else ["(All)"]
+            zone_disabled = tab != "Roadmap Assistant"
+            if zone_disabled:
+                zones = ["(All)"]
         else:
             zones = list_zones(current_city)
+            zone_disabled = False
 
         if not zones:
             st.sidebar.selectbox(
@@ -1571,12 +1597,14 @@ def main():
             if "zone" not in st.session_state or st.session_state["zone"] not in zones:
                 default_zone = "(All)" if "(All)" in zones else zones[0]
                 st.session_state["zone"] = default_zone
+            if zone_disabled:
+                st.session_state["zone"] = "(All)"
 
             zone = st.sidebar.selectbox(
                 "Zone",
                 zones,
                 key="zone",        # CHỈ dùng key="zone" ở đây
-                disabled=False,
+                disabled=zone_disabled,
             )
             current_zone = zone
     # alias cho phần còn lại của code
@@ -1656,16 +1684,6 @@ def main():
             LOOKBACK = None
             HORIZON = None
 
-
-    # ----- OPTIONS -----
-    if "option_tab" not in st.session_state:
-        st.session_state["option_tab"] = "FORECAST"
-
-    tab = st.sidebar.radio(
-        "Options",
-        ["FORECAST", "METRICS AND EVALUATION", "Roadmap Assistant"],
-        key="option_tab",
-    )
 
     # ====================================
     # 3) ROUTE (sidebar)
