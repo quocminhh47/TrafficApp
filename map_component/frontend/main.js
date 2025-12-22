@@ -265,17 +265,19 @@ function updateMarkers(
       // gửi route_id về Python
       sendValue(routeId);
 
-      // highlight marker được chọn
-      Object.entries(markersById).forEach(([rid, m]) => {
+      // highlight marker được chọn, giữ nguyên màu theo level của từng tuyến
+      Object.entries(markersById).forEach(([rid, info]) => {
         const sel = rid === routeId;
-        m.setIcon(getIcon(sel, baseColor, selectedColor));
+        const base = info?.baseColor ?? defaultBaseColor;
+        const selectedCol = info?.selectedColor ?? defaultSelectedColor;
+        info?.marker?.setIcon(getIcon(sel, base, selectedCol));
       });
 
       map.setView([lat, lon], 14);
     });
 
     marker.addTo(markersGroup);
-    markersById[routeId] = marker;
+    markersById[routeId] = { marker, baseColor, selectedColor };
   });
 
   if (hasDistrictCenter) {
@@ -295,7 +297,11 @@ function updateMarkers(
 
   // Điều khiển view
   if (selectedRouteId && markersById[selectedRouteId]) {
-    const latlng = markersById[selectedRouteId].getLatLng();
+    const info = markersById[selectedRouteId];
+    const latlng = info.marker.getLatLng();
+    info.marker.setIcon(
+      getIcon(true, info.baseColor ?? defaultBaseColor, info.selectedColor ?? defaultSelectedColor)
+    );
     map.setView(latlng, 14);
     firstRender = false;
   } else if (focusBounds) {

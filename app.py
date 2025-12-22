@@ -1862,8 +1862,8 @@ def main():
 
     routes_data = df_geo_city.to_dict("records")
     df_all_geo = routes_geo_all.dropna(subset=["lat", "lon"]).copy()
-    if city:
-        df_all_geo = df_all_geo[df_all_geo["city"] == city].copy()
+    # Gửi toàn bộ route (mọi city) xuống frontend để nút Reset View luôn có thể
+    # zoom ra phạm vi hiển thị ban đầu của ứng dụng.
     all_routes_list = df_all_geo.to_dict("records")
 
     clicked_route_id = map_routes(
