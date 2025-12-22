@@ -2086,10 +2086,8 @@ def main():
                 df_other_display.to_html(escape=False, index=False),
                 unsafe_allow_html=True,
             )
-        elif df_all is not None and not df_all.empty:
-            st.info("Tất cả các tuyến trong quận đã được liệt kê ở bảng trên.")
-        else:
-            st.info("Không có tuyến khác để hiển thị trong quận này.")
+        # else:
+        #     st.info("Không có tuyến khác để hiển thị trong quận này.")
         return
     if route_id:
         display_name = route_id
