@@ -2832,6 +2832,40 @@ def main():
                         )
                         * 100.0
                 )
+            metrics_rows = []
+
+            for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
+                col_name = f"Daily_{m_name}"
+                if col_name not in df_eval.columns:
+                    continue
+                valid = df_eval[["DailyActual", col_name]].dropna()
+                if valid.empty:
+                    continue
+
+                actual = valid["DailyActual"].values.astype(float)
+                pred = valid[col_name].values.astype(float)
+
+                mse = mean_squared_error(actual, pred)
+                rmse = np.sqrt(mse)
+                mae = mean_absolute_error(actual, pred)
+
+                if np.any(actual != 0):
+                    mape = (
+                        np.mean(
+                            np.abs((actual - pred)[actual != 0] / actual[actual != 0])
+                        )
+                        * 100.0
+                    )
+                else:
+                    mape = np.nan
+
+                denom = np.abs(actual) + np.abs(pred)
+                smape = (
+                    np.mean(
+                        2.0 * np.abs(pred - actual) / np.where(denom == 0, 1.0, denom)
+                    )
+                    * 100.0
+                )
 
                 r2 = r2_score(actual, pred)
 
@@ -2856,7 +2890,6 @@ def main():
                     df_metrics[c] = df_metrics[c].round(3)
 
                 # ---- Format số theo dạng 000,000,000.00 ----
-                format_cols = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
                 df_formatted = df_metrics.copy()
                 for c in ["MSE", "RMSE", "MAE"]:
                     df_formatted[c] = df_formatted[c].apply(lambda x: f"{x:,.2f}")
@@ -2865,39 +2898,56 @@ def main():
 
                 st.dataframe(df_formatted, use_container_width=True)
 
-            # ==== Biểu đồ cột cho từng đánh giá ====
-            st.subheader("📊 Biểu đồ cột cho từng đánh giá sai số")
-            metrics_list = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
-            cols = st.columns(2) # Tạo layout 2 cột
+                # ==== Biểu đồ cột cho từng đánh giá ====
+                st.subheader("📊 Biểu đồ cột cho từng đánh giá sai số")
+                metrics_list = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
+                cols = st.columns(2)  # Tạo layout 2 cột
 
-            for i, metric in enumerate(metrics_list):
-                chart = (
-                    alt.Chart(df_metrics)
-                    .mark_bar()
-                    .encode(
-                        x=alt.X("Model:N", title="Model", axis=alt.Axis(labelAngle=0)),
-                        y=alt.Y(f"{metric}:Q", title=metric),
-                        tooltip=["Model", metric]
+                for i, metric in enumerate(metrics_list):
+                    value_format = ".2f" if metric not in ["MAPE (%)", "SMAPE (%)", "R²"] else ".3f"
+                    base = (
+                        alt.Chart(df_metrics)
+                        .encode(
+                            x=alt.X("Model:N", title="Model", axis=alt.Axis(labelAngle=0)),
+                            y=alt.Y(f"{metric}:Q", title=metric),
+                        )
                     )
-                    .properties(
+                    chart = alt.layer(
+                        base.mark_bar(tooltip=["Model", metric]),
+                        base.mark_text(
+                            dy=-6,
+                            color="#111",
+                            fontWeight="bold",
+                        ).encode(text=alt.Text(f"{metric}:Q", format=value_format)),
+                    ).properties(
                         height=300,
                         title=alt.TitleParams(
                             f"{metric}",
                             fontSize=24,
                             fontWeight="bold",
                             color="#333",
-                            anchor="middle"  # căn giữa
-                        )
+                            anchor="middle",  # căn giữa
+                        ),
                     )
+
+                    cols[i % 2].altair_chart(chart, use_container_width=True)
+
+                    # Sau mỗi 2 biểu đồ → tạo hàng mới
+                    if i % 2 == 1 and i < len(metrics_list) - 1:
+                        cols = st.columns(2)
+
+                # ==== Xếp hạng model tốt nhất (RMSE càng thấp càng tốt) ====
+                ranking_metric = "RMSE"
+                df_rank = (
+                    df_metrics.sort_values(ranking_metric, ascending=True)
+                    .reset_index(drop=True)
                 )
-
-                # Vẽ đúng cột (0 hoặc 1)
-                cols[i % 2].altair_chart(chart, use_container_width=True)
-
-                # Sau mỗi 2 biểu đồ → tạo hàng mới
-                if i % 2 == 1 and i < len(metrics_list) - 1:
-                    cols = st.columns(2)
-
+                df_rank.insert(0, "Thứ hạng", df_rank.index + 1)
+                st.subheader("🏅 Xếp hạng model (dựa trên RMSE thấp → cao)")
+                st.dataframe(
+                    df_rank[["Thứ hạng", "Model", ranking_metric, "MAE", "MAPE (%)"]],
+                    use_container_width=True,
+                )
             else:
                 st.info("Không có series nào (GRU/RNN/LSTM/ARIMA/SARIMA) để hiển thị.")
 
@@ -3066,7 +3116,6 @@ def main():
                             df_metrics_weekly[c] = df_metrics_weekly[c].round(3)
 
                         # ---- Format số theo dạng 000,000,000.00 ----
-                        format_cols = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
                         df_formatted_weekly = df_metrics_weekly.copy()
                         for c in ["MSE", "RMSE", "MAE"]:
                             df_formatted_weekly[c] = df_formatted_weekly[c].apply(
@@ -3091,9 +3140,9 @@ def main():
                         cols = st.columns(2)  # 2 cột mỗi hàng
 
                         for i, metric in enumerate(metrics_list):
-                            chart = (
+                            value_format = ".2f" if metric not in ["MAPE (%)", "SMAPE (%)", "R²"] else ".3f"
+                            base = (
                                 alt.Chart(df_metrics_weekly)
-                                .mark_bar()
                                 .encode(
                                     x=alt.X(
                                         "Model:N",
@@ -3101,18 +3150,24 @@ def main():
                                         axis=alt.Axis(labelAngle=0),
                                     ),
                                     y=alt.Y(f"{metric}:Q", title=metric),
-                                    tooltip=["Model", metric],
                                 )
-                                .properties(
-                                    height=300,
-                                    title=alt.TitleParams(
-                                        f"{metric}",
-                                        fontSize=24,
-                                        fontWeight="bold",
-                                        color="#333",
-                                        anchor="middle",  # căn giữa
-                                    ),
-                                )
+                            )
+                            chart = alt.layer(
+                                base.mark_bar(tooltip=["Model", metric]),
+                                base.mark_text(
+                                    dy=-6,
+                                    color="#111",
+                                    fontWeight="bold",
+                                ).encode(text=alt.Text(f"{metric}:Q", format=value_format)),
+                            ).properties(
+                                height=300,
+                                title=alt.TitleParams(
+                                    f"{metric}",
+                                    fontSize=24,
+                                    fontWeight="bold",
+                                    color="#333",
+                                    anchor="middle",  # căn giữa
+                                ),
                             )
 
                             # vẽ vào đúng cột
@@ -3121,6 +3176,19 @@ def main():
                             # tạo hàng kế tiếp sau mỗi 2 chart
                             if i % 2 == 1 and i < len(metrics_list) - 1:
                                 cols = st.columns(2)
+
+                        # ==== Xếp hạng model tốt nhất (RMSE càng thấp càng tốt) ====
+                        ranking_metric = "RMSE"
+                        df_rank_w = (
+                            df_metrics_weekly.sort_values(ranking_metric, ascending=True)
+                            .reset_index(drop=True)
+                        )
+                        df_rank_w.insert(0, "Thứ hạng", df_rank_w.index + 1)
+                        st.subheader("🏅 Xếp hạng model Weekly (dựa trên RMSE thấp → cao)")
+                        st.dataframe(
+                            df_rank_w[["Thứ hạng", "Model", ranking_metric, "MAE", "MAPE (%)"]],
+                            use_container_width=True,
+                        )
                     else:
                         st.info("Không có dữ liệu Weekly để tính metrics.")
                 else:
@@ -3264,7 +3332,6 @@ def main():
                     df_metrics_monthly[c] = df_metrics_monthly[c].round(3)
 
                 # ---- Format số theo dạng 000,000,000.00 ----
-                format_cols = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
                 df_formatted_monthly = df_metrics_monthly.copy()
                 for c in ["MSE", "RMSE", "MAE"]:
                     df_formatted_monthly[c] = df_formatted_monthly[c].apply(lambda x: f"{x:,.2f}")
@@ -3279,30 +3346,51 @@ def main():
                 cols = st.columns(2)
 
                 for i, metric in enumerate(metrics_list):
-                    chart = (
+                    value_format = ".2f" if metric not in ["MAPE (%)", "SMAPE (%)", "R²"] else ".3f"
+                    base = (
                         alt.Chart(df_metrics_monthly)
-                        .mark_bar()
                         .encode(
                             x=alt.X("Model:N", title="Model", axis=alt.Axis(labelAngle=0)),
                             y=alt.Y(f"{metric}:Q", title=metric),
-                            tooltip=["Model", metric],
                         )
-                        .properties(
-                            height=300,
-                            title=alt.TitleParams(
-                                f"{metric}",
-                                fontSize=24,
-                                fontWeight="bold",
-                                color="#333",
-                                anchor="middle",  # căn giữa
-                            ),
-                        )
+                    )
+                    chart = alt.layer(
+                        base.mark_bar(tooltip=["Model", metric]),
+                        base.mark_text(
+                            dy=-6,
+                            color="#111",
+                            fontWeight="bold",
+                        ).encode(text=alt.Text(f"{metric}:Q", format=value_format)),
+                    ).properties(
+                        height=300,
+                        title=alt.TitleParams(
+                            f"{metric}",
+                            fontSize=24,
+                            fontWeight="bold",
+                            color="#333",
+                            anchor="middle",  # căn giữa
+                        ),
                     )
 
                     cols[i % 2].altair_chart(chart, use_container_width=True)
 
                     if i % 2 == 1 and i < len(metrics_list) - 1:
                         cols = st.columns(2)
+
+                # ==== Xếp hạng model tốt nhất (RMSE càng thấp càng tốt) ====
+                ranking_metric = "RMSE"
+                df_rank_m = (
+                    df_metrics_monthly.sort_values(ranking_metric, ascending=True)
+                    .reset_index(drop=True)
+                )
+                df_rank_m.insert(0, "Thứ hạng", df_rank_m.index + 1)
+                st.subheader("🏅 Xếp hạng model Monthly (dựa trên RMSE thấp → cao)")
+                st.dataframe(
+                    df_rank_m[["Thứ hạng", "Model", ranking_metric, "MAE", "MAPE (%)"]],
+                    use_container_width=True,
+                )
+            else:
+                st.info("Không có dữ liệu Monthly để tính metrics.")
 
     elif tab == "Roadmap Assistant":
         if city == "HoChiMinh":
