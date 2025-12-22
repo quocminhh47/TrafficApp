@@ -1978,7 +1978,7 @@ def main():
 
         selected_district = zone if zone not in (None, "(All)") else None
 
-        st.header("📍 Roadmap Assistant – Report by District (2h tới)")
+        st.header("📍 Roadmap Assistant – Report by District ( next 2 hours )")
 
         if not selected_district:
             st.info("Hãy chọn Quận/Huyện trong mục Zone để xem báo cáo chi tiết.")
@@ -2086,8 +2086,8 @@ def main():
                 df_other_display.to_html(escape=False, index=False),
                 unsafe_allow_html=True,
             )
-        elif df_all is not None and not df_all.empty:
-            st.info("Tất cả các tuyến trong quận đã được liệt kê ở bảng trên.")
+        # elif df_all is not None and not df_all.empty:
+            # st.info("Tất cả các tuyến trong quận đã được liệt kê ở bảng trên.")
         else:
             st.info("Không có tuyến khác để hiển thị trong quận này.")
         return
@@ -2638,7 +2638,7 @@ def main():
         # 7.0 Tab Hourly
         # -----------------
         with tab_cmp_hourly:
-            st.subheader("HOURLY – trung bình theo giờ trong 1 tháng gần nhất")
+            st.subheader("Biểu đồ thể hiện lưu lượng xe trung bình theo giờ trong ngày ")
 
             if df_full.empty:
                 st.info("Không có dữ liệu để tính trung bình theo giờ.")
@@ -2721,7 +2721,7 @@ def main():
         # 7.1 Tab Daily
         # -----------------
         with tab_cmp_daily:
-            st.subheader("DAILY (Actual + Models) – 3 tháng gần nhất")
+            st.subheader("Biểu đồ đánh giá sai số theo từng ngày các model - 3 tháng gần nhất")
             # ==== Chart multi-line (Actual + Models) ====
             frames = [
                 df_eval[["Date", "DailyActual"]]
@@ -3050,7 +3050,7 @@ def main():
                 st.info("Không có series nào (GRU/RNN/LSTM/ARIMA/SARIMA) để hiển thị.")
 
         with tab_cmp_weekly:
-            st.subheader("WEEKLY (Actual + Models) – 3 tháng gần nhất")
+            st.subheader("Biểu đồ đánh giá sai số theo tuần các model - 3 tháng gần nhất")
 
             df_weekly = df_eval.copy()
             df_weekly["Date"] = pd.to_datetime(df_weekly["Date"])
@@ -3347,7 +3347,7 @@ def main():
 
 
             # ==== Chart multi-line Monthly (Actual + Models) ====
-            st.subheader("MONTHLY (Actual + Models) – 3 tháng gần nhất")
+            st.subheader("Biểu đồ đánh giá sai số theo tháng các model - 3 tháng gần nhất")
 
             frames_m = [
                 df_monthly[["MonthStart", "MonthlyActual"]]
