@@ -35,7 +35,7 @@ let markersGroup = null;
 let markersById = {};
 let globalBounds = null;
 let resetAdded = false;
-let legendAdded = false;
+let legendControl = null;
 let firstRender = true;
 
 function ensureMap() {
@@ -51,9 +51,9 @@ function ensureMap() {
   }
 }
 
-function getIcon(isSelected) {
+function getIcon(isSelected, baseColor = "#3388ff", selectedColor = "#ff3333") {
   const size = isSelected ? 40 : 28;
-  const color = isSelected ? "#ff3333" : "#3388ff";
+  const color = isSelected ? selectedColor : baseColor;
 
   return L.divIcon({
     html: `
@@ -98,6 +98,33 @@ function computeBounds(list) {
   );
 }
 
+function boundsFromArray(boundsArr) {
+  if (!Array.isArray(boundsArr) || boundsArr.length !== 2) return null;
+  const [sw, ne] = boundsArr;
+  if (
+    !Array.isArray(sw) ||
+    !Array.isArray(ne) ||
+    sw.length !== 2 ||
+    ne.length !== 2
+  ) {
+    return null;
+  }
+
+  const [minLat, minLon] = sw.map(Number);
+  const [maxLat, maxLon] = ne.map(Number);
+
+  if (
+    !Number.isFinite(minLat) ||
+    !Number.isFinite(minLon) ||
+    !Number.isFinite(maxLat) ||
+    !Number.isFinite(maxLon)
+  ) {
+    return null;
+  }
+
+  return L.latLngBounds(L.latLng(minLat, minLon), L.latLng(maxLat, maxLon));
+}
+
 function addResetButton() {
   if (resetAdded || !map) return;
 
@@ -109,7 +136,9 @@ function addResetButton() {
 
       L.DomEvent.on(btn, "click", () => {
         if (globalBounds) {
-          map.fitBounds(globalBounds, { padding: [80, 80] });
+          map.fitBounds(globalBounds, { padding: [100, 100] });
+        } else if (markersGroup && markersGroup.getLayers().length > 0) {
+          map.fitBounds(markersGroup.getBounds(), { padding: [100, 100] });
         }
       });
 
@@ -121,46 +150,86 @@ function addResetButton() {
   resetAdded = true;
 }
 
-function addLegend() {
-  if (legendAdded || !map) return;
-
-  const legend = L.control({ position: "bottomleft" });
-
-  legend.onAdd = function () {
-    const div = L.DomUtil.create("div", "traffic-legend");
-    div.innerHTML = `
-      <div style="background: rgba(255,255,255,0.9); padding:6px 10px; border-radius:8px; font-size:12px; box-shadow: 0 1px 3px rgba(0,0,0,0.25);">
-        <div style="margin-bottom:2px;">
-          <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#ff3333;margin-right:4px;border:1px solid #fff;"></span>
-          Tuyến đang chọn
-        </div>
-        <div>
-          <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#3388ff;margin-right:4px;border:1px solid #fff;"></span>
-          Tuyến khác
-        </div>
-      </div>
-    `;
-    return div;
-  };
-
-  legend.addTo(map);
-  legendAdded = true;
-}
-
-
-function updateMarkers(routesData, selectedRouteId, allRoutes) {
+function updateMarkers(
+  routesData,
+  selectedRouteId,
+  allRoutes,
+  focusBoundsArr,
+  districtCenter
+) {
   ensureMap();
 
-  // Luôn vẽ marker cho TẤT CẢ các route (nhiều city)
-  const list = (allRoutes && allRoutes.length > 0)
-    ? allRoutes
-    : (routesData || []);
+  const baseRiskList = routesData && routesData.length > 0 ? routesData : [];
+  const riskLookup = new Map();
+  baseRiskList.forEach((r) => {
+    const rid = String(r.route_id || r.id || "");
+    if (rid) {
+      riskLookup.set(rid, r);
+    }
+  });
+
+  const baseList = allRoutes && allRoutes.length > 0 ? allRoutes : baseRiskList;
+  const mergedList = baseList.map((r) => {
+    const rid = String(r.route_id || r.id || "");
+    const risk = rid ? riskLookup.get(rid) : null;
+    if (risk) {
+      return { ...r, level: risk.level ?? r.level, p_peak: risk.p_peak ?? r.p_peak };
+    }
+    return r;
+  });
+
+  // Bổ sung route có risk nhưng chưa nằm trong baseList (hiếm)
+  baseRiskList.forEach((r) => {
+    const rid = String(r.route_id || r.id || "");
+    if (!rid) return;
+    const exists = mergedList.some((item) => String(item.route_id || item.id || "") === rid);
+    if (!exists) {
+      mergedList.push(r);
+    }
+  });
+
+  const hasRiskLevels = baseRiskList.some((r) => (r.level || "").toString().length > 0);
+
+  const list = mergedList;
+
+  const hasDistrictCenter =
+    districtCenter &&
+    Number.isFinite(Number(districtCenter.lat)) &&
+    Number.isFinite(Number(districtCenter.lon));
 
   markersGroup.clearLayers();
   markersById = {};
 
-  // Global bounds tính trên toàn bộ marker
-  globalBounds = computeBounds(list);
+  // Global bounds tính trên toàn bộ marker (để Reset View hiển thị lại tất cả)
+  const allBoundsList = list && list.length > 0 ? [...list] : [];
+
+  if (hasDistrictCenter) {
+    allBoundsList.push({ lat: districtCenter.lat, lon: districtCenter.lon });
+  }
+
+  globalBounds =
+    computeBounds(allBoundsList) ||
+    (markersGroup && markersGroup.getLayers().length > 0
+      ? markersGroup.getBounds()
+      : null);
+
+  const currentBounds = computeBounds(baseRiskList.length > 0 ? baseRiskList : list);
+  const focusBounds = boundsFromArray(focusBoundsArr) || currentBounds || globalBounds;
+
+  const riskBaseColors = {
+    high: "#e74c3c", // đỏ
+    medium: "#f1c40f", // vàng
+    low: "#2ecc71", // xanh lá
+  };
+
+  const riskSelectedColors = {
+    high: "#c0392b",
+    medium: "#d4ac0d",
+    low: "#1e8449",
+  };
+
+  const defaultBaseColor = hasDistrictCenter ? "#3388ff" : "#3388ff";
+  const defaultSelectedColor = hasDistrictCenter ? "#1b8a5a" : "#ff3333";
 
   list.forEach((r) => {
     const lat = Number(r.lat);
@@ -168,9 +237,15 @@ function updateMarkers(routesData, selectedRouteId, allRoutes) {
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
 
     const routeId = r.route_id;
+    const level = (r.level || "").toString().toLowerCase();
+
+    const baseColor = riskBaseColors[level] || defaultBaseColor;
+    const selectedColor = riskSelectedColors[level] || defaultSelectedColor;
     const selected = routeId === selectedRouteId;
 
-    const marker = L.marker([lat, lon], { icon: getIcon(selected) });
+    const marker = L.marker([lat, lon], {
+      icon: getIcon(selected, baseColor, selectedColor),
+    });
 
     const name = r.name || routeId;
     const tooltipContent = `
@@ -190,39 +265,127 @@ function updateMarkers(routesData, selectedRouteId, allRoutes) {
       // gửi route_id về Python
       sendValue(routeId);
 
-      // highlight marker được chọn
-      Object.entries(markersById).forEach(([rid, m]) => {
+      // highlight marker được chọn, giữ nguyên màu theo level của từng tuyến
+      Object.entries(markersById).forEach(([rid, info]) => {
         const sel = rid === routeId;
-        m.setIcon(getIcon(sel));
+        const base = info?.baseColor ?? defaultBaseColor;
+        const selectedCol = info?.selectedColor ?? defaultSelectedColor;
+        info?.marker?.setIcon(getIcon(sel, base, selectedCol));
       });
 
-      map.setView([lat, lon], 15);
+      map.setView([lat, lon], 14);
     });
 
     marker.addTo(markersGroup);
-    markersById[routeId] = marker;
+    markersById[routeId] = { marker, baseColor, selectedColor };
   });
+
+  if (hasDistrictCenter) {
+    const lat = Number(districtCenter.lat);
+    const lon = Number(districtCenter.lon);
+    const marker = L.marker([lat, lon], {
+      icon: getIcon(true, "#3498db", "#3498db"),
+    });
+
+    marker.bindTooltip(
+      `<div><b>${districtCenter.district || "Trung tâm quận"}</b></div>`,
+      { direction: "top", offset: [0, -30] }
+    );
+
+    marker.addTo(markersGroup);
+  }
 
   // Điều khiển view
   if (selectedRouteId && markersById[selectedRouteId]) {
-    // Có route đang chọn → zoom vào luôn
-    const latlng = markersById[selectedRouteId].getLatLng();
-    map.setView(latlng, 15);
+    const info = markersById[selectedRouteId];
+    const latlng = info.marker.getLatLng();
+    info.marker.setIcon(
+      getIcon(true, info.baseColor ?? defaultBaseColor, info.selectedColor ?? defaultSelectedColor)
+    );
+    map.setView(latlng, 14);
+    firstRender = false;
+  } else if (focusBounds) {
+    map.fitBounds(focusBounds, { padding: [80, 80], maxZoom: 14 });
     firstRender = false;
   } else if (firstRender) {
-    // Lần đầu chưa có route → overview tất cả
     if (globalBounds) {
       map.fitBounds(globalBounds, { padding: [80, 80] });
     }
     firstRender = false;
   } else if (globalBounds) {
-    // Fallback: overview
     map.fitBounds(globalBounds, { padding: [80, 80] });
   }
 
-
   addResetButton();
-  addLegend();
+  if (legendControl) {
+    legendControl.remove();
+  }
+
+  legendControl = L.control({
+    position: "bottomleft",
+    hasDistrictCenter,
+    hasRiskLevels,
+  });
+  legendControl.onAdd = function () {
+    const div = L.DomUtil.create("div", "traffic-legend");
+    const commonWrapper =
+      "background: rgba(255,255,255,0.9); padding:6px 10px; border-radius:8px; font-size:12px; box-shadow: 0 1px 3px rgba(0,0,0,0.25);";
+
+    const opts = this.options || {};
+
+    if (opts.hasDistrictCenter) {
+      div.innerHTML = `
+        <div style="${commonWrapper}">
+          <div style="margin-bottom:2px;">
+            <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#3498db;margin-right:4px;border:1px solid #fff;"></span>
+            Trung tâm quận
+          </div>
+          ${
+            hasRiskLevels
+              ? `
+                <div style="margin-top:6px; font-weight:600;">Màu marker tuyến</div>
+                <div style="margin-top:2px;">
+                  <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#e74c3c;margin-right:4px;border:1px solid #fff;"></span>
+                  Tuyến rủi ro cao
+                </div>
+                <div style="margin-top:2px;">
+                  <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#f1c40f;margin-right:4px;border:1px solid #fff;"></span>
+                  Tuyến rủi ro trung bình
+                </div>
+                <div style="margin-top:2px;">
+                  <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#2ecc71;margin-right:4px;border:1px solid #fff;"></span>
+                  Tuyến rủi ro thấp
+                </div>
+                <div style="margin-top:2px;">
+                  <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#3388ff;margin-right:4px;border:1px solid #fff;"></span>
+                  Tuyến chưa có nhãn rủi ro
+                </div>`
+              : `
+                <div style="margin-top:6px; font-weight:600;">Màu marker tuyến</div>
+                <div style="margin-top:2px;">
+                  <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#3388ff;margin-right:4px;border:1px solid #fff;"></span>
+                  Tuyến trong quận
+                </div>`
+          }
+        </div>`;
+      return div;
+    }
+
+    div.innerHTML = `
+      <div style="${commonWrapper}">
+        <div style="margin-bottom:2px;">
+          <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#ff3333;margin-right:4px;border:1px solid #fff;"></span>
+          Tuyến đang chọn
+        </div>
+        <div>
+          <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#3388ff;margin-right:4px;border:1px solid #fff;"></span>
+          Tuyến khác
+        </div>
+      </div>`;
+    return div;
+  };
+
+  legendControl.addTo(map);
 }
 
 function createMarker(lat, lon, isSelected, routeId, name) {
@@ -252,8 +415,16 @@ function handleRender(args) {
   const routesData = args.data || [];
   const selectedRouteId = args.selected_route_id || null;
   const allRoutes = args.all_routes || [];
+  const focusBoundsArr = args.focus_bounds || null;
+  const districtCenter = args.district_center || null;
 
-  updateMarkers(routesData, selectedRouteId, allRoutes);
+  updateMarkers(
+    routesData,
+    selectedRouteId,
+    allRoutes,
+    focusBoundsArr,
+    districtCenter
+  );
 
   const h =
     document.getElementById("map")?.getBoundingClientRect()?.height || 500;

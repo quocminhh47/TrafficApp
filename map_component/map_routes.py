@@ -1,29 +1,39 @@
 import os
 import streamlit.components.v1 as components
 
-# Create a _RELEASE constant. We'll set this to False while developing
-# and True when we're ready to package it up.
-_RELEASE = False
+# When developing, set MAP_COMPONENT_DEV=1 to point to the Vite dev server.
+# In production (default), serve the built or source frontend directly from disk.
+_DEV_MODE = os.getenv("MAP_COMPONENT_DEV", "0") == "1"
 
-if not _RELEASE:
-    # DEVELOPMENT MODE:
-    # In this mode, we rely on the vite dev server running on port 5173.
+if _DEV_MODE:
     _component_func = components.declare_component(
         "map_routes",
         url="http://localhost:5173",
     )
 else:
-    # PRODUCTION MODE:
-    # In this mode, we point to the build directory.
     parent_dir = os.path.dirname(os.path.abspath(__file__))
-    build_dir = os.path.join(parent_dir, "frontend", "dist")
+    dist_dir = os.path.join(parent_dir, "frontend", "dist")
+    fallback_dir = os.path.join(parent_dir, "frontend")
+    static_path = dist_dir if os.path.exists(dist_dir) else fallback_dir
+
     _component_func = components.declare_component(
         "map_routes",
-        path=build_dir
+        path=static_path,
     )
 
 
-def map_routes(routes_data, selected_route_id, all_routes=None, key=None):
+def map_routes(
+    routes_data,
+    selected_route_id,
+    all_routes=None,
+    *,
+    focus_bounds=None,
+    district_center=None,
+    district_centers_geojson=None,
+    district_capacity=None,
+    selected_district=None,
+    key=None,
+):
     """
     Hiển thị bản đồ các tuyến đường (routes) với custom Leaflet frontend.
 
@@ -53,6 +63,11 @@ def map_routes(routes_data, selected_route_id, all_routes=None, key=None):
         data=routes_data,
         selected_route_id=selected_route_id,
         all_routes=all_routes,  # << gửi thêm xuống frontend
+        focus_bounds=focus_bounds,
+        district_center=district_center,
+        district_centers_geojson=district_centers_geojson,
+        district_capacity=district_capacity,
+        selected_district=selected_district,
         key=key,
         default=None,
     )
