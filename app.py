@@ -1584,6 +1584,9 @@ def main():
     )
 
     has_city = city_selected != CITY_PLACEHOLDER
+    # Giữ state city đồng bộ (tránh bị reset khi tương tác Roadmap Assistant)
+    if has_city and st.session_state.get("city") != city_selected:
+        st.session_state["city"] = city_selected
     current_city = city_selected if has_city else None
 
     # ----- OPTIONS -----
@@ -2663,26 +2666,31 @@ def main():
                         f"Khoảng dữ liệu: {start_dt.date()} → {max_date.date()}"
                     )
 
-                    chart_hourly = (
-                        alt.Chart(df_hourly)
-                        .mark_bar()
-                        .encode(
-                            x=alt.X("Hour:O", title="Giờ trong ngày"),
-                            y=alt.Y(
-                                "VehiclesPerHour:Q",
-                                title="Lưu lượng trung bình (vehicles/giờ)",
-                            ),
-                            tooltip=[
-                                alt.Tooltip("Hour:O", title="Giờ"),
-                                alt.Tooltip(
-                                    "VehiclesPerHour:Q",
-                                    title="Lưu lượng trung bình",
-                                    format=",.2f",
-                                ),
-                            ],
-                        )
-                        .properties(height=320)
+                    base_hourly = alt.Chart(df_hourly).encode(
+                        x=alt.X("Hour:O", title="Giờ trong ngày"),
+                        y=alt.Y(
+                            "VehiclesPerHour:Q",
+                            title="Lưu lượng trung bình (vehicles/giờ)",
+                        ),
                     )
+
+                    chart_hourly = alt.layer(
+                        base_hourly.mark_bar(),
+                        base_hourly.mark_text(
+                            dy=-6, color="#111", fontWeight="bold"
+                        ).encode(
+                            text=alt.Text("VehiclesPerHour:Q", format=",.1f")
+                        ),
+                    ).encode(
+                        tooltip=[
+                            alt.Tooltip("Hour:O", title="Giờ"),
+                            alt.Tooltip(
+                                "VehiclesPerHour:Q",
+                                title="Lưu lượng trung bình",
+                                format=",.2f",
+                            ),
+                        ]
+                    ).properties(height=320)
 
                     st.altair_chart(chart_hourly, use_container_width=True)
 
@@ -2698,7 +2706,16 @@ def main():
                     )
 
                     st.markdown("#### Bảng tổng hợp theo giờ")
-                    st.dataframe(df_table, use_container_width=True)
+                    df_table_am = df_table[df_table["Giờ"].str.extract(r"(\d+)").astype(int)[0] < 12]
+                    df_table_pm = df_table[df_table["Giờ"].str.extract(r"(\d+)").astype(int)[0] >= 12]
+
+                    col_am, col_pm = st.columns(2)
+                    with col_am:
+                        st.caption("Nửa ngày đầu (0h–11h)")
+                        st.dataframe(df_table_am.reset_index(drop=True), use_container_width=True)
+                    with col_pm:
+                        st.caption("Nửa ngày sau (12h–23h)")
+                        st.dataframe(df_table_pm.reset_index(drop=True), use_container_width=True)
 
         # -----------------
         # 7.1 Tab Daily
@@ -2935,21 +2952,30 @@ def main():
                         df_chart_w = pd.concat(frames_w, ignore_index=True).sort_values(
                             "WeekStart"
                         )
-                        chart_weekly = (
-                            alt.Chart(df_chart_w)
-                            .mark_line(point=True)
-                            .encode(
-                                x=alt.X("WeekStart:T", title="Tuần (ngày bắt đầu)"),
-                                y=alt.Y("WeeklyValue:Q", title="Vehicles / week"),
-                                color=alt.Color("Source:N", title="Series"),
-                                tooltip=[
-                                    alt.Tooltip("WeekStart:T", title="Week Start"),
-                                    alt.Tooltip("Source:N", title="Series"),
-                                    alt.Tooltip("WeeklyValue:Q", title="Vehicles/week", format=","),
-                                ],
-                            )
-                            .properties(height=300)
+                        base_weekly = alt.Chart(df_chart_w).encode(
+                            x=alt.X("WeekStart:T", title="Tuần (ngày bắt đầu)"),
+                            y=alt.Y("WeeklyValue:Q", title="Vehicles / week"),
+                            color=alt.Color("Source:N", title="Series"),
                         )
+
+                        chart_weekly = alt.layer(
+                            base_weekly.mark_line(point=True),
+                            base_weekly.mark_text(
+                                align="left",
+                                dx=6,
+                                dy=-6,
+                                fontWeight="bold",
+                                color="#111",
+                            ).encode(text=alt.Text("WeeklyValue:Q", format=",.0f")),
+                        ).encode(
+                            tooltip=[
+                                alt.Tooltip("WeekStart:T", title="Week Start"),
+                                alt.Tooltip("Source:N", title="Series"),
+                                alt.Tooltip(
+                                    "WeeklyValue:Q", title="Vehicles/week", format="," 
+                                ),
+                            ]
+                        ).properties(height=300)
                         st.altair_chart(chart_weekly, use_container_width=True)
 
                     with st.expander(
@@ -3155,21 +3181,28 @@ def main():
 
             df_chart_m = pd.concat(frames_m, ignore_index=True).sort_values("MonthStart")
 
-            chart_monthly = (
-                alt.Chart(df_chart_m)
-                .mark_line(point=True)
-                .encode(
-                    x=alt.X("MonthStart:T", title="Month (Start Date)"),
-                    y=alt.Y("MonthlyValue:Q", title="Vehicles / month"),
-                    color=alt.Color("Source:N"),
-                    tooltip=[
-                        alt.Tooltip("MonthStart:T", title="Month Start"),
-                        alt.Tooltip("Source:N", title="Series"),
-                        alt.Tooltip("MonthlyValue:Q", format=","),
-                    ],
-                )
-                .properties(height=300)
+            base_monthly = alt.Chart(df_chart_m).encode(
+                x=alt.X("MonthStart:T", title="Month (Start Date)"),
+                y=alt.Y("MonthlyValue:Q", title="Vehicles / month"),
+                color=alt.Color("Source:N"),
             )
+
+            chart_monthly = alt.layer(
+                base_monthly.mark_line(point=True),
+                base_monthly.mark_text(
+                    align="left",
+                    dx=6,
+                    dy=-6,
+                    fontWeight="bold",
+                    color="#111",
+                ).encode(text=alt.Text("MonthlyValue:Q", format=",.0f")),
+            ).encode(
+                tooltip=[
+                    alt.Tooltip("MonthStart:T", title="Month Start"),
+                    alt.Tooltip("Source:N", title="Series"),
+                    alt.Tooltip("MonthlyValue:Q", format=","),
+                ]
+            ).properties(height=300)
 
             st.altair_chart(chart_monthly, use_container_width=True)
 
