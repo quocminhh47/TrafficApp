@@ -2936,18 +2936,31 @@ def main():
                     if i % 2 == 1 and i < len(metrics_list) - 1:
                         cols = st.columns(2)
 
-                # ==== Xếp hạng model tốt nhất (RMSE càng thấp càng tốt) ====
-                ranking_metric = "RMSE"
-                df_rank = (
-                    df_metrics.sort_values(ranking_metric, ascending=True)
-                    .reset_index(drop=True)
-                )
-                df_rank.insert(0, "Thứ hạng", df_rank.index + 1)
-                st.subheader("🏅 Xếp hạng model (dựa trên RMSE thấp → cao)")
-                st.dataframe(
-                    df_rank[["Thứ hạng", "Model", ranking_metric, "MAE", "MAPE (%)"]],
-                    use_container_width=True,
-                )
+                # ==== Xếp hạng model theo từng tiêu chí ====
+                st.subheader("🏅 Xếp hạng model theo từng tiêu chí")
+                ranking_specs = [
+                    ("MSE", True, "MSE (thấp → cao)"),
+                    ("RMSE", True, "RMSE (thấp → cao)"),
+                    ("MAE", True, "MAE (thấp → cao)"),
+                    ("MAPE (%)", True, "MAPE (thấp → cao)"),
+                    ("SMAPE (%)", True, "SMAPE (thấp → cao)"),
+                    ("R²", False, "R² (cao → thấp)"),
+                ]
+
+                rank_cols = st.columns(3)
+                for idx, (metric, ascending, title) in enumerate(ranking_specs):
+                    if metric not in df_metrics.columns:
+                        continue
+                    df_rank = (
+                        df_metrics.sort_values(metric, ascending=ascending)
+                        .reset_index(drop=True)
+                    )
+                    df_rank.insert(0, "Thứ hạng", df_rank.index + 1)
+                    rank_cols[idx % 3].markdown(f"**{title}**")
+                    rank_cols[idx % 3].dataframe(
+                        df_rank[["Thứ hạng", "Model", metric]],
+                        use_container_width=True,
+                    )
             else:
                 st.info("Không có series nào (GRU/RNN/LSTM/ARIMA/SARIMA) để hiển thị.")
 
@@ -3177,18 +3190,31 @@ def main():
                             if i % 2 == 1 and i < len(metrics_list) - 1:
                                 cols = st.columns(2)
 
-                        # ==== Xếp hạng model tốt nhất (RMSE càng thấp càng tốt) ====
-                        ranking_metric = "RMSE"
-                        df_rank_w = (
-                            df_metrics_weekly.sort_values(ranking_metric, ascending=True)
-                            .reset_index(drop=True)
-                        )
-                        df_rank_w.insert(0, "Thứ hạng", df_rank_w.index + 1)
-                        st.subheader("🏅 Xếp hạng model Weekly (dựa trên RMSE thấp → cao)")
-                        st.dataframe(
-                            df_rank_w[["Thứ hạng", "Model", ranking_metric, "MAE", "MAPE (%)"]],
-                            use_container_width=True,
-                        )
+                        # ==== Xếp hạng model theo từng tiêu chí ====
+                        st.subheader("🏅 Xếp hạng model Weekly theo từng tiêu chí")
+                        ranking_specs = [
+                            ("MSE", True, "MSE (thấp → cao)"),
+                            ("RMSE", True, "RMSE (thấp → cao)"),
+                            ("MAE", True, "MAE (thấp → cao)"),
+                            ("MAPE (%)", True, "MAPE (thấp → cao)"),
+                            ("SMAPE (%)", True, "SMAPE (thấp → cao)"),
+                            ("R²", False, "R² (cao → thấp)"),
+                        ]
+
+                        rank_cols = st.columns(3)
+                        for idx, (metric, ascending, title) in enumerate(ranking_specs):
+                            if metric not in df_metrics_weekly.columns:
+                                continue
+                            df_rank_w = (
+                                df_metrics_weekly.sort_values(metric, ascending=ascending)
+                                .reset_index(drop=True)
+                            )
+                            df_rank_w.insert(0, "Thứ hạng", df_rank_w.index + 1)
+                            rank_cols[idx % 3].markdown(f"**{title}**")
+                            rank_cols[idx % 3].dataframe(
+                                df_rank_w[["Thứ hạng", "Model", metric]],
+                                use_container_width=True,
+                            )
                     else:
                         st.info("Không có dữ liệu Weekly để tính metrics.")
                 else:
@@ -3377,18 +3403,31 @@ def main():
                     if i % 2 == 1 and i < len(metrics_list) - 1:
                         cols = st.columns(2)
 
-                # ==== Xếp hạng model tốt nhất (RMSE càng thấp càng tốt) ====
-                ranking_metric = "RMSE"
-                df_rank_m = (
-                    df_metrics_monthly.sort_values(ranking_metric, ascending=True)
-                    .reset_index(drop=True)
-                )
-                df_rank_m.insert(0, "Thứ hạng", df_rank_m.index + 1)
-                st.subheader("🏅 Xếp hạng model Monthly (dựa trên RMSE thấp → cao)")
-                st.dataframe(
-                    df_rank_m[["Thứ hạng", "Model", ranking_metric, "MAE", "MAPE (%)"]],
-                    use_container_width=True,
-                )
+                # ==== Xếp hạng model theo từng tiêu chí ====
+                st.subheader("🏅 Xếp hạng model Monthly theo từng tiêu chí")
+                ranking_specs = [
+                    ("MSE", True, "MSE (thấp → cao)"),
+                    ("RMSE", True, "RMSE (thấp → cao)"),
+                    ("MAE", True, "MAE (thấp → cao)"),
+                    ("MAPE (%)", True, "MAPE (thấp → cao)"),
+                    ("SMAPE (%)", True, "SMAPE (thấp → cao)"),
+                    ("R²", False, "R² (cao → thấp)"),
+                ]
+
+                rank_cols = st.columns(3)
+                for idx, (metric, ascending, title) in enumerate(ranking_specs):
+                    if metric not in df_metrics_monthly.columns:
+                        continue
+                    df_rank_m = (
+                        df_metrics_monthly.sort_values(metric, ascending=ascending)
+                        .reset_index(drop=True)
+                    )
+                    df_rank_m.insert(0, "Thứ hạng", df_rank_m.index + 1)
+                    rank_cols[idx % 3].markdown(f"**{title}**")
+                    rank_cols[idx % 3].dataframe(
+                        df_rank_m[["Thứ hạng", "Model", metric]],
+                        use_container_width=True,
+                    )
             else:
                 st.info("Không có dữ liệu Monthly để tính metrics.")
 
