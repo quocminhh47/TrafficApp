@@ -1340,6 +1340,53 @@ def load_hcmc_district_centers() -> list[dict]:
     return centers
 
 
+@st.cache_data(ttl=600)
+def load_hcmc_district_centers_geojson() -> dict:
+    """Load full geojson centers để vẽ overlay vòng tròn."""
+
+    path = Path(BASE_DIR) / "data" / "geo" / "hcmc_district_centers.geojson"
+    if not path.exists():
+        return {}
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    return data
+
+
+@st.cache_data(ttl=600)
+def load_sample_hcmc_district_capacity() -> dict[str, float]:
+    """Trả về dict mẫu (0..1) cho demo vùng công suất quận."""
+
+    centers = load_hcmc_district_centers()
+    if not centers:
+        return {}
+
+    base = {c["district"]: 0.0 for c in centers if c.get("district")}
+    base.update(
+        {
+            "Quận 1": 0.65,
+            "Quận 3": 0.5,
+            "Quận 5": 0.45,
+            "Quận 10": 0.55,
+            "Quận 11": 0.35,
+            "Quận Phú Nhuận": 0.25,
+            "Quận Tân Bình": 0.6,
+            "Quận Tân Phú": 0.4,
+            "Quận Gò Vấp": 0.7,
+            "Quận Bình Tân": 0.5,
+            "Quận 12": 0.55,
+            "Huyện Hóc Môn": 0.3,
+            "Huyện Bình Chánh": 0.42,
+            "Thành phố Thủ Đức": 0.5,
+        }
+    )
+
+    return base
+
+
 def _get_hcmc_district_center(district: str) -> dict | None:
     centers = load_hcmc_district_centers()
     for c in centers:
@@ -1818,6 +1865,9 @@ def main():
 
     focus_bounds = None
     district_center_marker = None
+    district_centers_geojson = None
+    district_capacity = None
+    selected_district_for_map = None
 
     df_geo_city = (
         routes_geo_all[routes_geo_all["city"] == city].copy()
@@ -1842,6 +1892,12 @@ def main():
         and city == "HoChiMinh"
         and zone not in (None, "(All)")
     )
+
+    if city == "HoChiMinh":
+        district_centers_geojson = load_hcmc_district_centers_geojson()
+        district_capacity = load_sample_hcmc_district_capacity()
+        if zone not in (None, "(All)"):
+            selected_district_for_map = zone
 
     if should_focus_district and not df_geo_city.empty:
         mask_district = df_geo_city["district"].apply(
@@ -1872,8 +1928,21 @@ def main():
         all_routes=all_routes_list,
         focus_bounds=focus_bounds,
         district_center=district_center_marker,
+        district_centers_geojson=district_centers_geojson,
+        district_capacity=district_capacity,
+        selected_district=selected_district_for_map,
         key="traffic_map",
     )
+
+    clicked_district = None
+    if isinstance(clicked_route_id, dict):
+        clicked_district = clicked_route_id.get("district")
+        clicked_route_id = clicked_route_id.get("route_id")
+
+    if clicked_district:
+        st.session_state["pending_city"] = "HoChiMinh"
+        st.session_state["pending_zone"] = clicked_district
+        st.rerun()
 
     if clicked_route_id is not None:
         # Chỉ xử lý nếu thực sự khác lần trước

@@ -30,6 +30,9 @@ def map_routes(
     *,
     focus_bounds=None,
     district_center=None,
+    district_centers_geojson=None,
+    district_capacity=None,
+    selected_district=None,
     key=None,
 ):
     """
@@ -63,6 +66,9 @@ def map_routes(
         all_routes=all_routes,  # << gửi thêm xuống frontend
         focus_bounds=focus_bounds,
         district_center=district_center,
+        district_centers_geojson=district_centers_geojson,
+        district_capacity=district_capacity,
+        selected_district=selected_district,
         key=key,
         default=None,
     )

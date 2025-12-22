@@ -37,6 +37,7 @@ let globalBounds = null;
 let resetAdded = false;
 let legendControl = null;
 let firstRender = true;
+let districtCirclesGroup = null;
 
 function ensureMap() {
   if (!map) {
@@ -47,6 +48,7 @@ function ensureMap() {
       attribution: "© OpenStreetMap contributors",
     }).addTo(map);
 
+    districtCirclesGroup = L.featureGroup().addTo(map);
     markersGroup = L.featureGroup().addTo(map);
   }
 }
@@ -150,14 +152,125 @@ function addResetButton() {
   resetAdded = true;
 }
 
+function getCapacityColor(val) {
+  const v = Number.isFinite(Number(val)) ? Math.min(Math.max(Number(val), 0), 1) : 0;
+  if (v <= 0.3) return "#2ecc71"; // low - green
+  if (v <= 0.7) return "#f1c40f"; // medium - yellow
+  return "#e74c3c"; // high - red
+}
+
+const DISTRICT_RADIUS = {
+  "Quận 1": 2200,
+  "Quận 3": 2200,
+  "Quận 5": 2300,
+  "Quận 10": 2300,
+  "Quận 11": 2500,
+  "Quận Phú Nhuận": 2000,
+  "Quận Tân Bình": 3000,
+  "Quận Tân Phú": 3200,
+  "Quận Gò Vấp": 3200,
+  "Quận Bình Tân": 3500,
+  "Quận 12": 4500,
+  "Huyện Hóc Môn": 6000,
+  "Huyện Bình Chánh": 6500,
+  "Thành phố Thủ Đức": 6500,
+};
+
+function getDistrictRadius(districtName) {
+  return DISTRICT_RADIUS[districtName] || 3000;
+}
+
+function updateDistrictCircles(districtCentersGeojson, districtCapacity, selectedDistrict) {
+  ensureMap();
+
+  if (!districtCirclesGroup) return null;
+
+  districtCirclesGroup.clearLayers();
+
+  const features = Array.isArray(districtCentersGeojson?.features)
+    ? districtCentersGeojson.features
+    : [];
+
+  if (!features.length) {
+    return null;
+  }
+
+  const capacityLookup = districtCapacity && typeof districtCapacity === "object" ? districtCapacity : {};
+  let selectedBounds = null;
+
+  features.forEach((feat) => {
+    if (!feat || (feat.type || "").toLowerCase() !== "feature") return;
+
+    const props = feat.properties || {};
+    const geom = feat.geometry || {};
+    if ((geom.type || "").toLowerCase() !== "point") return;
+
+    const coords = geom.coordinates;
+    if (!Array.isArray(coords) || coords.length < 2) return;
+
+    const lon = Number(coords[0]);
+    const lat = Number(coords[1]);
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+    const district = String(props.district || "").trim();
+    if (!district) return;
+
+    const radius = getDistrictRadius(district);
+    const rawCap = capacityLookup[district];
+    const capacity = Number.isFinite(Number(rawCap))
+      ? Math.min(Math.max(Number(rawCap), 0), 1)
+      : 0;
+    const color = getCapacityColor(capacity);
+    const isSelected = selectedDistrict && district === selectedDistrict;
+
+    const circle = L.circle([lat, lon], {
+      radius,
+      color,
+      weight: isSelected ? 3 : 2,
+      fillColor: color,
+      fillOpacity: isSelected ? 0.22 : 0.18,
+      interactive: true,
+    });
+
+    const capacityPct = Math.round(capacity * 100);
+    circle.bindTooltip(`${district} — Công suất: ${capacityPct}%`, {
+      direction: "top",
+    });
+
+    circle.on("click", () => {
+      sendValue({ district });
+    });
+
+    circle.addTo(districtCirclesGroup);
+
+    if (isSelected) {
+      selectedBounds = circle.getBounds();
+    }
+  });
+
+  districtCirclesGroup.bringToBack();
+
+  return selectedBounds;
+}
+
 function updateMarkers(
   routesData,
   selectedRouteId,
   allRoutes,
   focusBoundsArr,
-  districtCenter
+  districtCenter,
+  districtCentersGeojson,
+  districtCapacity,
+  selectedDistrict
 ) {
   ensureMap();
+
+  const selectedDistrictBounds = updateDistrictCircles(
+    districtCentersGeojson,
+    districtCapacity,
+    selectedDistrict
+  );
 
   const baseRiskList = routesData && routesData.length > 0 ? routesData : [];
   const riskLookup = new Map();
@@ -196,6 +309,10 @@ function updateMarkers(
     districtCenter &&
     Number.isFinite(Number(districtCenter.lat)) &&
     Number.isFinite(Number(districtCenter.lon));
+
+  const hasDistrictCircles =
+    Array.isArray(districtCentersGeojson?.features) &&
+    districtCentersGeojson.features.length > 0;
 
   markersGroup.clearLayers();
   markersById = {};
@@ -304,6 +421,9 @@ function updateMarkers(
     );
     map.setView(latlng, 14);
     firstRender = false;
+  } else if (selectedDistrictBounds) {
+    map.fitBounds(selectedDistrictBounds, { padding: [80, 80], maxZoom: 14 });
+    firstRender = false;
   } else if (focusBounds) {
     map.fitBounds(focusBounds, { padding: [80, 80], maxZoom: 14 });
     firstRender = false;
@@ -325,22 +445,41 @@ function updateMarkers(
     position: "bottomleft",
     hasDistrictCenter,
     hasRiskLevels,
+    hasDistrictCircles,
   });
   legendControl.onAdd = function () {
     const div = L.DomUtil.create("div", "traffic-legend");
     const commonWrapper =
       "background: rgba(255,255,255,0.9); padding:6px 10px; border-radius:8px; font-size:12px; box-shadow: 0 1px 3px rgba(0,0,0,0.25);";
 
-    if (hasDistrictCenter) {
+    const opts = this.options || {};
+
+    if (opts.hasDistrictCenter || opts.hasDistrictCircles) {
       div.innerHTML = `
         <div style="${commonWrapper}">
           <div style="margin-bottom:2px;">
             <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#3498db;margin-right:4px;border:1px solid #fff;"></span>
             Trung tâm quận
           </div>
+          ${opts.hasDistrictCircles ? `
+            <div style="margin-top:6px; font-weight:600;">Vùng quận (công suất)</div>
+            <div style="margin-top:2px;">
+              <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#2ecc71;margin-right:4px;border:1px solid #fff;"></span>
+              Công suất thấp
+            </div>
+            <div style="margin-top:2px;">
+              <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#f1c40f;margin-right:4px;border:1px solid #fff;"></span>
+              Công suất trung bình
+            </div>
+            <div style="margin-top:2px;">
+              <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#e74c3c;margin-right:4px;border:1px solid #fff;"></span>
+              Công suất cao
+            </div>
+          ` : ""}
           ${
             hasRiskLevels
               ? `
+                <div style="margin-top:6px; font-weight:600;">Màu marker tuyến</div>
                 <div style="margin-top:2px;">
                   <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#e74c3c;margin-right:4px;border:1px solid #fff;"></span>
                   Tuyến rủi ro cao
@@ -358,6 +497,7 @@ function updateMarkers(
                   Tuyến chưa có nhãn rủi ro
                 </div>`
               : `
+                <div style="margin-top:6px; font-weight:600;">Màu marker tuyến</div>
                 <div style="margin-top:2px;">
                   <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#3388ff;margin-right:4px;border:1px solid #fff;"></span>
                   Tuyến trong quận
@@ -413,8 +553,20 @@ function handleRender(args) {
   const allRoutes = args.all_routes || [];
   const focusBoundsArr = args.focus_bounds || null;
   const districtCenter = args.district_center || null;
+  const districtCentersGeojson = args.district_centers_geojson || null;
+  const districtCapacity = args.district_capacity || null;
+  const selectedDistrict = args.selected_district || null;
 
-  updateMarkers(routesData, selectedRouteId, allRoutes, focusBoundsArr, districtCenter);
+  updateMarkers(
+    routesData,
+    selectedRouteId,
+    allRoutes,
+    focusBoundsArr,
+    districtCenter,
+    districtCentersGeojson,
+    districtCapacity,
+    selectedDistrict
+  );
 
   const h =
     document.getElementById("map")?.getBoundingClientRect()?.height || 500;
