@@ -1,0 +1,236 @@
+{
+  "type": "FeatureCollection",
+  "name": "hcmc_district_centers",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "EPSG:4326"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "city": "HoChiMinh",
+        "district": "Quận 1",
+        "district_lat": 10.7769,
+        "district_lon": 106.7009
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          106.7009,
+          10.7769
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "city": "HoChiMinh",
+        "district": "Quận 3",
+        "district_lat": 10.784,
+        "district_lon": 106.684
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          106.684,
+          10.784
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "city": "HoChiMinh",
+        "district": "Quận 5",
+        "district_lat": 10.754,
+        "district_lon": 106.6634
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          106.6634,
+          10.754
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "city": "HoChiMinh",
+        "district": "Quận 10",
+        "district_lat": 10.7746,
+        "district_lon": 106.6679
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          106.6679,
+          10.7746
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "city": "HoChiMinh",
+        "district": "Quận 11",
+        "district_lat": 10.7639,
+        "district_lon": 106.6435
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          106.6435,
+          10.7639
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "city": "HoChiMinh",
+        "district": "Quận Tân Bình",
+        "district_lat": 10.8016,
+        "district_lon": 106.6521
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          106.6521,
+          10.8016
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "city": "HoChiMinh",
+        "district": "Quận Tân Phú",
+        "district_lat": 10.79,
+        "district_lon": 106.628
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          106.628,
+          10.79
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "city": "HoChiMinh",
+        "district": "Quận Gò Vấp",
+        "district_lat": 10.8386,
+        "district_lon": 106.6656
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          106.6656,
+          10.8386
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "city": "HoChiMinh",
+        "district": "Quận Phú Nhuận",
+        "district_lat": 10.8,
+        "district_lon": 106.68
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          106.68,
+          10.8
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "city": "HoChiMinh",
+        "district": "Quận 12",
+        "district_lat": 10.8671,
+        "district_lon": 106.6415
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          106.6415,
+          10.8671
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "city": "HoChiMinh",
+        "district": "Quận Bình Tân",
+        "district_lat": 10.765,
+        "district_lon": 106.6075
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          106.6075,
+          10.765
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "city": "HoChiMinh",
+        "district": "Thành phố Thủ Đức",
+        "district_lat": 10.85,
+        "district_lon": 106.755
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          106.755,
+          10.85
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "city": "HoChiMinh",
+        "district": "Huyện Hóc Môn",
+        "district_lat": 10.891,
+        "district_lon": 106.592
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          106.592,
+          10.891
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "city": "HoChiMinh",
+        "district": "Huyện Bình Chánh",
+        "district_lat": 10.74,
+        "district_lon": 106.59
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          106.59,
+          10.74
+        ]
+      }
+    }
+  ]
+}
