@@ -2910,10 +2910,14 @@ def main():
                         .encode(
                             x=alt.X("Model:N", title="Model", axis=alt.Axis(labelAngle=0)),
                             y=alt.Y(f"{metric}:Q", title=metric),
+                            tooltip=[
+                                alt.Tooltip("Model:N", title="Model"),
+                                alt.Tooltip(f"{metric}:Q", title=metric, format=value_format),
+                            ],
                         )
                     )
                     chart = alt.layer(
-                        base.mark_bar(tooltip=["Model", metric]),
+                        base.mark_bar(),
                         base.mark_text(
                             dy=-6,
                             color="#111",
@@ -3163,10 +3167,16 @@ def main():
                                         axis=alt.Axis(labelAngle=0),
                                     ),
                                     y=alt.Y(f"{metric}:Q", title=metric),
+                                    tooltip=[
+                                        alt.Tooltip("Model:N", title="Model"),
+                                        alt.Tooltip(
+                                            f"{metric}:Q", title=metric, format=value_format
+                                        ),
+                                    ],
                                 )
                             )
                             chart = alt.layer(
-                                base.mark_bar(tooltip=["Model", metric]),
+                                base.mark_bar(),
                                 base.mark_text(
                                     dy=-6,
                                     color="#111",
@@ -3378,10 +3388,14 @@ def main():
                         .encode(
                             x=alt.X("Model:N", title="Model", axis=alt.Axis(labelAngle=0)),
                             y=alt.Y(f"{metric}:Q", title=metric),
+                            tooltip=[
+                                alt.Tooltip("Model:N", title="Model"),
+                                alt.Tooltip(f"{metric}:Q", title=metric, format=value_format),
+                            ],
                         )
                     )
                     chart = alt.layer(
-                        base.mark_bar(tooltip=["Model", metric]),
+                        base.mark_bar(),
                         base.mark_text(
                             dy=-6,
                             color="#111",
