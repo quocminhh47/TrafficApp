@@ -1,0 +1,185 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "route_id": "le_duc_tho",
+        "name": "L\u00ea \u0110\u1ee9c Th\u1ecd (HCMC)",
+        "city": "HoChiMinh",
+        "zone": "HCMC"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            106.65753583858854,
+            10.84344704577172
+          ],
+          [
+            106.66353583858854,
+            10.84844704577172
+          ],
+          [
+            106.67153583858855,
+            10.851447045771721
+          ],
+          [
+            106.67753583858855,
+            10.85644704577172
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "route_id": "ly_thuong_kiet",
+        "name": "L\u00fd Th\u01b0\u1eddng Ki\u1ec7t (HCMC)",
+        "city": "HoChiMinh",
+        "zone": "HCMC"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            106.647060397801,
+            10.771291062388011
+          ],
+          [
+            106.653060397801,
+            10.776291062388012
+          ],
+          [
+            106.66106039780101,
+            10.779291062388012
+          ],
+          [
+            106.66706039780101,
+            10.78429106238801
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "route_id": "nguyen_kiem",
+        "name": "Nguy\u1ec5n Ki\u1ec7m (HCMC)",
+        "city": "HoChiMinh",
+        "zone": "HCMC"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            107.25940895550326,
+            10.489633559895566
+          ],
+          [
+            107.26540895550326,
+            10.494633559895567
+          ],
+          [
+            107.27340895550327,
+            10.497633559895567
+          ],
+          [
+            107.27940895550327,
+            10.502633559895566
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "route_id": "nguyen_dinh_chieu",
+        "name": "Nguy\u1ec5n \u00d0\u00ecnh Chi\u1ec3u (HCMC)",
+        "city": "HoChiMinh",
+        "zone": "HCMC"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            106.67104534427115,
+            10.799111435462564
+          ],
+          [
+            106.67704534427115,
+            10.804111435462564
+          ],
+          [
+            106.68504534427116,
+            10.807111435462565
+          ],
+          [
+            106.69104534427116,
+            10.812111435462564
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "route_id": "to_hien_thanh",
+        "name": "T\u00f4 Hi\u1ebfn Th\u00e0nh (HCMC)",
+        "city": "HoChiMinh",
+        "zone": "HCMC"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            106.65465761993518,
+            10.772516797298206
+          ],
+          [
+            106.66065761993518,
+            10.777516797298206
+          ],
+          [
+            106.66865761993519,
+            10.780516797298207
+          ],
+          [
+            106.67465761993519,
+            10.785516797298206
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "route_id": "truong_chinh",
+        "name": "Tr\u01b0\u1eddng Chinh (HCMC)",
+        "city": "HoChiMinh",
+        "zone": "HCMC"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            106.6218617520814,
+            10.812068042134523
+          ],
+          [
+            106.6278617520814,
+            10.817068042134524
+          ],
+          [
+            106.63586175208141,
+            10.820068042134524
+          ],
+          [
+            106.64186175208141,
+            10.825068042134523
+          ]
+        ]
+      }
+    }
+  ]
+}

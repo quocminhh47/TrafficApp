@@ -1555,10 +1555,28 @@ def main():
     df_all_geo = routes_geo_all.dropna(subset=["lat", "lon"]).copy()
     all_routes_list = df_all_geo.to_dict("records")
 
+    # Demo GeoJSON + fake congestion score for map layers
+    route_lines_geojson = None
+    demo_lines_path = Path("data/hcmc_route_lines.geojson")
+    if demo_lines_path.exists():
+        with open(demo_lines_path, "r", encoding="utf-8") as f:
+            route_lines_geojson = json.load(f)
+
+    route_congestion = {
+        "le_duc_tho": 0.82,
+        "ly_thuong_kiet": 0.55,
+        "nguyen_kiem": 0.18,
+        "nguyen_dinh_chieu": 0.75,
+        "to_hien_thanh": 0.42,
+        "truong_chinh": 0.90,
+    }
+
     clicked_route_id = map_routes(
         routes_data=routes_data,
         selected_route_id=route_id,
         all_routes=all_routes_list,
+        route_lines_geojson=route_lines_geojson,
+        route_congestion=route_congestion,
         key="traffic_map",
     )
 

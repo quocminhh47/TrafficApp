@@ -23,7 +23,14 @@ else:
     )
 
 
-def map_routes(routes_data, selected_route_id, all_routes=None, key=None):
+def map_routes(
+    routes_data,
+    selected_route_id,
+    all_routes=None,
+    route_lines_geojson=None,
+    route_congestion=None,
+    key=None,
+):
     """
     Hiển thị bản đồ các tuyến đường (routes) với custom Leaflet frontend.
 
@@ -40,6 +47,13 @@ def map_routes(routes_data, selected_route_id, all_routes=None, key=None):
         Danh sách tất cả route của toàn project (mọi city),
         dùng để tính GLOBAL bounds cho nút "Reset view".
 
+    route_lines_geojson : dict or str or None
+        GeoJSON FeatureCollection chứa LineString/MultiLineString cho từng tuyến
+        (properties.route_id, properties.name).
+
+    route_congestion : dict or None
+        Mapping {route_id: p_cong (0..1)} để tô màu tuyến theo mức độ kẹt xe.
+
     key : str or None
         Key cho component trong Streamlit.
 
@@ -53,6 +67,8 @@ def map_routes(routes_data, selected_route_id, all_routes=None, key=None):
         data=routes_data,
         selected_route_id=selected_route_id,
         all_routes=all_routes,  # << gửi thêm xuống frontend
+        route_lines_geojson=route_lines_geojson,
+        route_congestion=route_congestion,
         key=key,
         default=None,
     )
