@@ -7,6 +7,7 @@ from pathlib import Path
 import joblib
 import json
 import os
+import urllib.parse
 
 from functools import lru_cache
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
@@ -1259,6 +1260,262 @@ def render_hcmc_weekly_pattern(route_id: str, routes_geo_all: pd.DataFrame):
     st.dataframe(styled, use_container_width=True)
 
 
+# =====================================================
+# HCMC DISTRICT HELPERS (Roadmap Assistant)
+# =====================================================
+
+
+def _flatten_districts(value) -> list[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if pd.isna(value):
+        return []
+    return [str(value).strip()]
+
+
+def _build_forecast_link(route_id: str, route_name: str, district: str) -> str:
+    params = {
+        "city": "HoChiMinh",
+        "zone": district,
+        "route_id": route_id,
+        "option": "FORECAST",
+    }
+    query = urllib.parse.urlencode(params)
+    safe_name = route_name or route_id
+    return f'<a href="/?{query}" target="_blank">{safe_name}</a>'
+
+
+def _list_hcmc_districts(routes_geo_df: pd.DataFrame) -> list[str]:
+    df_city = routes_geo_df[routes_geo_df["city"] == "HoChiMinh"].copy()
+    if df_city.empty:
+        return []
+
+    all_districts: list[str] = []
+    if "district" in df_city.columns:
+        for val in df_city["district"]:
+            all_districts.extend(_flatten_districts(val))
+
+    return sorted(set(all_districts))
+
+
+@st.cache_data(ttl=600)
+def load_hcmc_district_centers() -> list[dict]:
+    """Load danh sách tọa độ trung tâm quận từ geojson."""
+
+    path = Path(BASE_DIR) / "data" / "geo" / "hcmc_district_centers.geojson"
+    if not path.exists():
+        return []
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    centers: list[dict] = []
+    for feat in data.get("features", []):
+        props = feat.get("properties", {}) or {}
+        if str(props.get("city")) != "HoChiMinh":
+            continue
+
+        district = str(props.get("district") or "").strip()
+        if not district:
+            continue
+
+        lat = props.get("district_lat")
+        lon = props.get("district_lon")
+
+        if (lat is None or lon is None) and feat.get("geometry", {}).get("coordinates"):
+            coords = feat["geometry"].get("coordinates")
+            if isinstance(coords, (list, tuple)) and len(coords) >= 2:
+                lon, lat = coords[0], coords[1]
+
+        try:
+            lat = float(lat)
+            lon = float(lon)
+        except (TypeError, ValueError):
+            continue
+
+        centers.append({"district": district, "lat": lat, "lon": lon})
+
+    return centers
+
+
+@st.cache_data(ttl=600)
+def load_hcmc_district_centers_geojson() -> dict:
+    """Load full geojson centers để vẽ overlay vòng tròn."""
+
+    path = Path(BASE_DIR) / "data" / "geo" / "hcmc_district_centers.geojson"
+    if not path.exists():
+        return {}
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    return data
+
+
+@st.cache_data(ttl=600)
+def load_sample_hcmc_district_capacity() -> dict[str, float]:
+    """Trả về dict mẫu (0..1) cho demo vùng công suất quận."""
+
+    centers = load_hcmc_district_centers()
+    if not centers:
+        return {}
+
+    base = {c["district"]: 0.0 for c in centers if c.get("district")}
+    base.update(
+        {
+            "Quận 1": 0.65,
+            "Quận 3": 0.5,
+            "Quận 5": 0.45,
+            "Quận 10": 0.55,
+            "Quận 11": 0.35,
+            "Quận Phú Nhuận": 0.25,
+            "Quận Tân Bình": 0.6,
+            "Quận Tân Phú": 0.4,
+            "Quận Gò Vấp": 0.7,
+            "Quận Bình Tân": 0.5,
+            "Quận 12": 0.55,
+            "Huyện Hóc Môn": 0.3,
+            "Huyện Bình Chánh": 0.42,
+            "Thành phố Thủ Đức": 0.5,
+        }
+    )
+
+    return base
+
+
+def _get_hcmc_district_center(district: str) -> dict | None:
+    centers = load_hcmc_district_centers()
+    for c in centers:
+        if c.get("district") == district:
+            return c
+    return None
+
+
+def build_district_focus_bounds(df_routes: pd.DataFrame, center: dict | None):
+    lats: list[float] = []
+    lons: list[float] = []
+
+    if center:
+        lats.append(center.get("lat"))
+        lons.append(center.get("lon"))
+
+    for _, row in df_routes.iterrows():
+        try:
+            lat = float(row.get("lat"))
+            lon = float(row.get("lon"))
+        except (TypeError, ValueError):
+            continue
+
+        lats.append(lat)
+        lons.append(lon)
+
+    lats = [v for v in lats if pd.notna(v)]
+    lons = [v for v in lons if pd.notna(v)]
+
+    if not lats or not lons:
+        return None
+
+    min_lat, max_lat = min(lats), max(lats)
+    min_lon, max_lon = min(lons), max(lons)
+
+    padding = 0.01
+    return [
+        [min_lat - padding, min_lon - padding],
+        [max_lat + padding, max_lon + padding],
+    ]
+
+
+@st.cache_data(ttl=600)
+def compute_hcmc_district_report(district: str):
+    routes_geo_all = load_routes_geo().fillna("")
+    df_city = routes_geo_all[routes_geo_all["city"] == "HoChiMinh"].copy()
+    if df_city.empty:
+        return None, None, None
+
+    if "district" not in df_city.columns:
+        return None, None, None
+
+    mask = df_city["district"].apply(lambda v: district in _flatten_districts(v))
+    df_district = df_city[mask].copy()
+
+    rows: list[dict] = []
+    for _, row in df_district.iterrows():
+        rid = row.get("route_id")
+        if not rid:
+            continue
+
+        out = forecast_hcmc_next_2h(rid, routes_geo_all)
+        if out is None:
+            continue
+
+        df_fc, full_name = out
+        df_fc = df_fc.copy()
+        df_fc["ProbCongested"] = pd.to_numeric(
+            df_fc.get("ProbCongested"), errors="coerce"
+        ).clip(0.0, 1.0)
+
+        probs = df_fc["ProbCongested"].dropna()
+        if probs.empty:
+            continue
+
+        p_peak = float(probs.max())
+        p_mean = float(probs.mean())
+        t_peak_ts = pd.to_datetime(
+            df_fc.loc[probs.idxmax(), "DateTime"], errors="coerce"
+        )
+        t_peak_label = t_peak_ts.strftime("%H:%M") if pd.notna(t_peak_ts) else ""
+
+        if p_peak > 0.7:
+            level = "high"
+        elif p_peak > 0.3:
+            level = "medium"
+        else:
+            level = "low"
+
+        rows.append(
+            {
+                "route_id": rid,
+                "route_name": full_name or row.get("name") or rid,
+                "p_peak": p_peak,
+                "p_mean": p_mean,
+                "t_peak": t_peak_label,
+                "level": level,
+            }
+        )
+
+    if not rows:
+        return None, None, None
+
+    df_res = pd.DataFrame(rows)
+    df_res.sort_values("p_peak", ascending=False, inplace=True)
+
+    df_congested = df_res[df_res["level"].isin(["high", "medium"])]
+    df_free = df_res[df_res["level"] == "low"].sort_values("p_peak")
+
+    avoid_suggest = (
+        df_res[df_res["level"] == "high"]
+        .sort_values("p_peak", ascending=False)
+        .head(3)["route_name"]
+        .tolist()
+    )
+    prefer_suggest = (
+        df_free.sort_values("p_peak", ascending=True)
+        .head(3)["route_name"]
+        .tolist()
+    )
+
+    suggestions = {
+        "avoid": avoid_suggest,
+        "prefer": prefer_suggest,
+    }
+
+    return df_congested, df_free, suggestions, df_res
+
+
 # ======================================================
 # MAIN APP
 # ======================================================
@@ -1268,6 +1525,30 @@ def main():
 
     st.set_page_config(page_title="Traffic Forecast App", layout="wide")
     st.title(" Traffic Forecast App ")
+
+    if not st.session_state.get("query_params_applied"):
+        params = st.query_params
+
+        def _first_qp(value):
+            if isinstance(value, list):
+                return value[0] if value else None
+            return value
+
+        qp_city = _first_qp(params.get("city"))
+        qp_zone = _first_qp(params.get("zone"))
+        qp_route = _first_qp(params.get("route") or params.get("route_id"))
+        qp_option = _first_qp(params.get("option"))
+
+        if qp_city:
+            st.session_state["city"] = qp_city
+        if qp_zone:
+            st.session_state["zone"] = qp_zone
+        if qp_route:
+            st.session_state["route"] = qp_route
+        if qp_option:
+            st.session_state["option_tab"] = qp_option
+
+        st.session_state["query_params_applied"] = True
 
     # Apply pending selection từ map (trước khi tạo widget)
     if "pending_city" in st.session_state:
@@ -1303,7 +1584,27 @@ def main():
     )
 
     has_city = city_selected != CITY_PLACEHOLDER
+    # Giữ state city đồng bộ (tránh bị reset khi tương tác Roadmap Assistant)
+    if has_city and st.session_state.get("city") != city_selected:
+        st.session_state["city"] = city_selected
     current_city = city_selected if has_city else None
+
+    # ----- OPTIONS -----
+    if "option_tab" not in st.session_state:
+        st.session_state["option_tab"] = "FORECAST"
+
+    option_choices = ["FORECAST", "METRICS AND EVALUATION", "Roadmap Assistant"]
+    if has_city and current_city == "HoChiMinh":
+        option_choices = ["FORECAST", "Roadmap Assistant"]
+
+    if st.session_state.get("option_tab") not in option_choices:
+        st.session_state["option_tab"] = option_choices[0]
+
+    tab = st.sidebar.radio(
+        "Options",
+        option_choices,
+        key="option_tab",
+    )
 
     # ----- ZONE -----
     if not has_city:
@@ -1317,9 +1618,17 @@ def main():
         zone = None
         current_zone = None
     else:
-        zones = list_zones(current_city)
+        if current_city == "HoChiMinh":
+            routes_geo_all_sidebar = load_routes_geo().fillna("")
+            hcmc_districts = _list_hcmc_districts(routes_geo_all_sidebar)
+            zones = ["(All)"] + hcmc_districts if hcmc_districts else ["(All)"]
+            zone_disabled = tab != "Roadmap Assistant"
+            if zone_disabled:
+                zones = ["(All)"]
+        else:
+            zones = list_zones(current_city)
+            zone_disabled = False
 
-        # Trường hợp city không có zone (ví dụ HoChiMinh)
         if not zones:
             st.sidebar.selectbox(
                 "Zone",
@@ -1330,26 +1639,22 @@ def main():
             zone = None
             current_zone = None
         else:
-            # Nếu có nhiều zone:
-            #  - đưa "(All)" lên đầu
-            #  - nếu chưa có "(All)" mà >1 zone → thêm "(All)" vào đầu
             if "(All)" in zones:
                 zones = ["(All)"] + [z for z in zones if z != "(All)"]
             elif len(zones) > 1:
                 zones = ["(All)"] + zones
 
-            # Default zone:
-            #   - Nếu có "(All)" → chọn "(All)"
-            #   - Nếu chỉ có 1 zone → chọn đúng zone đó
             if "zone" not in st.session_state or st.session_state["zone"] not in zones:
                 default_zone = "(All)" if "(All)" in zones else zones[0]
                 st.session_state["zone"] = default_zone
+            if zone_disabled:
+                st.session_state["zone"] = "(All)"
 
             zone = st.sidebar.selectbox(
                 "Zone",
                 zones,
                 key="zone",        # CHỈ dùng key="zone" ở đây
-                disabled=False,
+                disabled=zone_disabled,
             )
             current_zone = zone
     # alias cho phần còn lại của code
@@ -1369,6 +1674,8 @@ def main():
     RID2IDX = None
     LOOKBACK = None
     HORIZON = None
+
+    district_report = None
 
     if has_city:
         ctx = None
@@ -1437,6 +1744,7 @@ def main():
 
     # luôn khai báo raw_routes, kể cả khi chưa chọn city
     raw_routes = []
+    route_disabled = tab == "Roadmap Assistant"
 
     if not has_city:
         # Chưa chọn city → disable route
@@ -1480,6 +1788,7 @@ def main():
                     "Route",
                     options,
                     key="route",
+                    disabled=route_disabled,
                     format_func=lambda rid: (
                         id2name.get(rid, rid)
                         if rid != ROUTE_PLACEHOLDER
@@ -1508,9 +1817,19 @@ def main():
                 "Route",
                 route_options,
                 key="route",
-                disabled=False,
+                disabled=route_disabled,
             )
             route_id = None if route_selected == ROUTE_PLACEHOLDER else route_selected
+
+    if route_disabled:
+        route_id = None
+
+    if (
+        tab == "Roadmap Assistant"
+        and city == "HoChiMinh"
+        and zone not in (None, "(All)")
+    ):
+        district_report = compute_hcmc_district_report(zone)
 
     # ====================================
     # 4) TOP-2 MODELS (cho ensemble forecast)
@@ -1540,9 +1859,6 @@ def main():
         # Chưa chọn city/route → chưa show gì, chỉ map + message "chọn route"
         pass
 
-    # ----- OPTIONS -----
-    tab = st.sidebar.radio("Options", ["FORECAST", "METRICS AND EVALUATION"])
-
     # ====================================
     # 5) MAP COMPONENT
     # ====================================
@@ -1550,17 +1866,86 @@ def main():
 
     routes_geo_all = load_routes_geo().fillna("")
 
-    df_geo_city = routes_geo_all[routes_geo_all["city"] == city].copy()
+    focus_bounds = None
+    district_center_marker = None
+    district_centers_geojson = None
+    district_capacity = None
+    selected_district_for_map = None
+
+    df_geo_city = (
+        routes_geo_all[routes_geo_all["city"] == city].copy()
+        if city
+        else pd.DataFrame()
+    )
+
+    district_risk_lookup: dict[str, dict] = {}
+    if district_report and len(district_report) == 4:
+        df_all_levels = district_report[3]
+        if df_all_levels is not None:
+            district_risk_lookup = {
+                str(r["route_id"]): {
+                    "level": r.get("level"),
+                    "p_peak": r.get("p_peak"),
+                }
+                for _, r in df_all_levels.iterrows()
+            }
+
+    should_focus_district = (
+        tab == "Roadmap Assistant"
+        and city == "HoChiMinh"
+        and zone not in (None, "(All)")
+    )
+
+    if city == "HoChiMinh":
+        district_centers_geojson = load_hcmc_district_centers_geojson()
+        district_capacity = load_sample_hcmc_district_capacity()
+        if zone not in (None, "(All)"):
+            selected_district_for_map = zone
+
+    if should_focus_district and not df_geo_city.empty:
+        mask_district = df_geo_city["district"].apply(
+            lambda v: zone in _flatten_districts(v)
+        )
+        df_geo_city = df_geo_city[mask_district].copy()
+        if not df_geo_city.empty and district_risk_lookup:
+            df_geo_city = df_geo_city.copy()
+            df_geo_city["level"] = df_geo_city["route_id"].apply(
+                lambda rid: district_risk_lookup.get(str(rid), {}).get(
+                    "level", ""
+                )
+            )
+        district_center_marker = _get_hcmc_district_center(zone)
+        focus_bounds = build_district_focus_bounds(
+            df_geo_city, district_center_marker
+        )
+
     routes_data = df_geo_city.to_dict("records")
     df_all_geo = routes_geo_all.dropna(subset=["lat", "lon"]).copy()
+    # Gửi toàn bộ route (mọi city) xuống frontend để nút Reset View luôn có thể
+    # zoom ra phạm vi hiển thị ban đầu của ứng dụng.
     all_routes_list = df_all_geo.to_dict("records")
 
     clicked_route_id = map_routes(
         routes_data=routes_data,
         selected_route_id=route_id,
         all_routes=all_routes_list,
+        focus_bounds=focus_bounds,
+        district_center=district_center_marker,
+        district_centers_geojson=district_centers_geojson,
+        district_capacity=district_capacity,
+        selected_district=selected_district_for_map,
         key="traffic_map",
     )
+
+    clicked_district = None
+    if isinstance(clicked_route_id, dict):
+        clicked_district = clicked_route_id.get("district")
+        clicked_route_id = clicked_route_id.get("route_id")
+
+    if clicked_district:
+        st.session_state["pending_city"] = "HoChiMinh"
+        st.session_state["pending_zone"] = clicked_district
+        st.rerun()
 
     if clicked_route_id is not None:
         # Chỉ xử lý nếu thực sự khác lần trước
@@ -1580,6 +1965,130 @@ def main():
                 st.session_state["pending_route"] = clicked_route_id
 
             st.rerun()
+
+    # Roadmap Assistant: báo cáo theo quận cho TP.HCM
+    if tab == "Roadmap Assistant":
+        if not has_city:
+            st.info("Chọn city ở sidebar để xem Roadmap Assistant.")
+            return
+
+        if city != "HoChiMinh":
+            st.warning("Khu vực chưa được support")
+            return
+
+        selected_district = zone if zone not in (None, "(All)") else None
+
+        st.header("📍 Roadmap Assistant – Report by District (2h tới)")
+
+        if not selected_district:
+            st.info("Hãy chọn Quận/Huyện trong mục Zone để xem báo cáo chi tiết.")
+            return
+
+        if (
+            district_report
+            and len(district_report) == 4
+            and selected_district == zone
+        ):
+            df_high, df_low, suggestions, df_all = district_report
+        else:
+            df_high, df_low, suggestions, df_all = compute_hcmc_district_report(
+                selected_district
+            )
+        if df_high is None and df_low is None:
+            st.warning("Không tìm thấy dữ liệu dự báo cho quận đã chọn.")
+            return
+
+        st.subheader(f"Quận/Huyện: {selected_district}")
+
+        avoid_list = (suggestions or {}).get("avoid") if suggestions else []
+        prefer_list = (suggestions or {}).get("prefer") if suggestions else []
+
+        st.markdown("### 🚗 Gợi ý lộ trình")
+        avoid_text = (
+            " • " + "\n • ".join(avoid_list)
+            if avoid_list
+            else "Không có tuyến nguy cơ cao."
+        )
+        prefer_text = (
+            " • " + "\n • ".join(prefer_list)
+            if prefer_list
+            else "Ưu tiên các tuyến còn lại trong quận."
+        )
+        st.markdown(
+            f"""
+**Nên tránh:**
+{avoid_text}
+
+**Nên ưu tiên:**
+{prefer_text}
+"""
+        )
+
+        displayed_high_ids: set[str] = set()
+
+        if df_high is not None and not df_high.empty:
+            df_high_display = df_high.copy()
+            df_high_display["p_peak (%)"] = (df_high_display["p_peak"] * 100).round(1)
+            df_high_display["p_mean (%)"] = (df_high_display["p_mean"] * 100).round(1)
+            df_high_display["Tuyến (mở dự báo)"] = df_high_display.apply(
+                lambda r: _build_forecast_link(
+                    r["route_id"], r["route_name"], selected_district
+                ),
+                axis=1,
+            )
+            df_high_display = df_high_display[
+                [
+                    "Tuyến (mở dự báo)",
+                    "route_id",
+                    "p_peak (%)",
+                    "level",
+                    "t_peak",
+                    "p_mean (%)",
+                ]
+            ]
+            displayed_high_ids = set(df_high_display["route_id"].tolist())
+            st.markdown("### 🚦 Tuyến có nguy cơ kẹt (2 giờ tới)")
+            st.markdown(
+                df_high_display.to_html(escape=False, index=False),
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("Không có tuyến nguy cơ cao hoặc trung bình trong 2 giờ tới.")
+
+        df_other = None
+        if df_all is not None and not df_all.empty:
+            df_other = df_all.copy()
+            if displayed_high_ids:
+                df_other = df_other[~df_other["route_id"].isin(displayed_high_ids)]
+
+        if df_other is not None and not df_other.empty:
+            df_other_display = df_other.copy()
+            df_other_display["p_peak (%)"] = (df_other_display["p_peak"] * 100).round(1)
+            df_other_display["p_mean (%)"] = (df_other_display["p_mean"] * 100).round(1)
+            df_other_display["Tuyến (mở dự báo)"] = df_other_display.apply(
+                lambda r: _build_forecast_link(
+                    r["route_id"], r["route_name"], selected_district
+                ),
+                axis=1,
+            )
+            df_other_display = df_other_display[
+                [
+                    "Tuyến (mở dự báo)",
+                    "route_id",
+                    "level",
+                    "p_peak (%)",
+                    "t_peak",
+                    "p_mean (%)",
+                ]
+            ]
+            st.markdown("### 🛣️ Các tuyến khác trong quận (mức rủi ro còn lại)")
+            st.markdown(
+                df_other_display.to_html(escape=False, index=False),
+                unsafe_allow_html=True,
+            )
+        # else:
+        #     st.info("Không có tuyến khác để hiển thị trong quận này.")
+        return
     if route_id:
         display_name = route_id
         if city == "HoChiMinh":
@@ -1978,9 +2487,7 @@ def main():
                             height=320,
                             title=f"Dự báo cho {vn_weekday_label(day_start)}",
                         )
-                        st.altair_chart(chart, use_container_width=True)
-            else:
-                st.info("Không có ngày nào trong forecast.")
+        st.altair_chart(chart, use_container_width=True)
 
     # ====================================
     # 8) DAILY TRAFFIC – 3 THÁNG GẦN NHẤT
@@ -2157,26 +2664,31 @@ def main():
                         f"Khoảng dữ liệu: {start_dt.date()} → {max_date.date()}"
                     )
 
-                    chart_hourly = (
-                        alt.Chart(df_hourly)
-                        .mark_bar()
-                        .encode(
-                            x=alt.X("Hour:O", title="Giờ trong ngày"),
-                            y=alt.Y(
-                                "VehiclesPerHour:Q",
-                                title="Lưu lượng trung bình (vehicles/giờ)",
-                            ),
-                            tooltip=[
-                                alt.Tooltip("Hour:O", title="Giờ"),
-                                alt.Tooltip(
-                                    "VehiclesPerHour:Q",
-                                    title="Lưu lượng trung bình",
-                                    format=",.2f",
-                                ),
-                            ],
-                        )
-                        .properties(height=320)
+                    base_hourly = alt.Chart(df_hourly).encode(
+                        x=alt.X("Hour:O", title="Giờ trong ngày"),
+                        y=alt.Y(
+                            "VehiclesPerHour:Q",
+                            title="Lưu lượng trung bình (vehicles/giờ)",
+                        ),
                     )
+
+                    chart_hourly = alt.layer(
+                        base_hourly.mark_bar(),
+                        base_hourly.mark_text(
+                            dy=-6, color="#111", fontWeight="bold"
+                        ).encode(
+                            text=alt.Text("VehiclesPerHour:Q", format=",.1f")
+                        ),
+                    ).encode(
+                        tooltip=[
+                            alt.Tooltip("Hour:O", title="Giờ"),
+                            alt.Tooltip(
+                                "VehiclesPerHour:Q",
+                                title="Lưu lượng trung bình",
+                                format=",.2f",
+                            ),
+                        ]
+                    ).properties(height=320)
 
                     st.altair_chart(chart_hourly, use_container_width=True)
 
@@ -2192,7 +2704,16 @@ def main():
                     )
 
                     st.markdown("#### Bảng tổng hợp theo giờ")
-                    st.dataframe(df_table, use_container_width=True)
+                    df_table_am = df_table[df_table["Giờ"].str.extract(r"(\d+)").astype(int)[0] < 12]
+                    df_table_pm = df_table[df_table["Giờ"].str.extract(r"(\d+)").astype(int)[0] >= 12]
+
+                    col_am, col_pm = st.columns(2)
+                    with col_am:
+                        st.caption("Nửa ngày đầu (0h–11h)")
+                        st.dataframe(df_table_am.reset_index(drop=True), use_container_width=True)
+                    with col_pm:
+                        st.caption("Nửa ngày sau (12h–23h)")
+                        st.dataframe(df_table_pm.reset_index(drop=True), use_container_width=True)
 
         # -----------------
         # 7.1 Tab Daily
@@ -2309,6 +2830,40 @@ def main():
                         )
                         * 100.0
                 )
+            metrics_rows = []
+
+            for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
+                col_name = f"Daily_{m_name}"
+                if col_name not in df_eval.columns:
+                    continue
+                valid = df_eval[["DailyActual", col_name]].dropna()
+                if valid.empty:
+                    continue
+
+                actual = valid["DailyActual"].values.astype(float)
+                pred = valid[col_name].values.astype(float)
+
+                mse = mean_squared_error(actual, pred)
+                rmse = np.sqrt(mse)
+                mae = mean_absolute_error(actual, pred)
+
+                if np.any(actual != 0):
+                    mape = (
+                        np.mean(
+                            np.abs((actual - pred)[actual != 0] / actual[actual != 0])
+                        )
+                        * 100.0
+                    )
+                else:
+                    mape = np.nan
+
+                denom = np.abs(actual) + np.abs(pred)
+                smape = (
+                    np.mean(
+                        2.0 * np.abs(pred - actual) / np.where(denom == 0, 1.0, denom)
+                    )
+                    * 100.0
+                )
 
                 r2 = r2_score(actual, pred)
 
@@ -2333,7 +2888,6 @@ def main():
                     df_metrics[c] = df_metrics[c].round(3)
 
                 # ---- Format số theo dạng 000,000,000.00 ----
-                format_cols = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
                 df_formatted = df_metrics.copy()
                 for c in ["MSE", "RMSE", "MAE"]:
                     df_formatted[c] = df_formatted[c].apply(lambda x: f"{x:,.2f}")
@@ -2342,227 +2896,340 @@ def main():
 
                 st.dataframe(df_formatted, use_container_width=True)
 
-            # ==== Biểu đồ cột cho từng đánh giá ====
-            st.subheader("📊 Biểu đồ cột cho từng đánh giá sai số")
-            metrics_list = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
-            cols = st.columns(2) # Tạo layout 2 cột
+                # ==== Biểu đồ cột cho từng đánh giá ====
+                st.subheader("📊 Biểu đồ cột cho từng đánh giá sai số")
+                metrics_list = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
+                cols = st.columns(2)  # Tạo layout 2 cột
 
-            for i, metric in enumerate(metrics_list):
-                chart = (
-                    alt.Chart(df_metrics)
-                    .mark_bar()
-                    .encode(
-                        x=alt.X("Model:N", title="Model", axis=alt.Axis(labelAngle=0)),
-                        y=alt.Y(f"{metric}:Q", title=metric),
-                        tooltip=["Model", metric]
+                for i, metric in enumerate(metrics_list):
+                    value_format = ".2f" if metric not in ["MAPE (%)", "SMAPE (%)", "R²"] else ".3f"
+                    base = (
+                        alt.Chart(df_metrics)
+                        .encode(
+                            x=alt.X("Model:N", title="Model", axis=alt.Axis(labelAngle=0)),
+                            y=alt.Y(f"{metric}:Q", title=metric),
+                            tooltip=[
+                                alt.Tooltip("Model:N", title="Model"),
+                                alt.Tooltip(f"{metric}:Q", title=metric, format=value_format),
+                            ],
+                        )
                     )
-                    .properties(
+                    chart = alt.layer(
+                        base.mark_bar(),
+                        base.mark_text(
+                            dy=-6,
+                            color="#111",
+                            fontWeight="bold",
+                        ).encode(text=alt.Text(f"{metric}:Q", format=value_format)),
+                    ).properties(
                         height=300,
                         title=alt.TitleParams(
                             f"{metric}",
                             fontSize=24,
                             fontWeight="bold",
                             color="#333",
-                            anchor="middle"  # căn giữa
-                        )
-                    )
-                )
-
-                # Vẽ đúng cột (0 hoặc 1)
-                cols[i % 2].altair_chart(chart, use_container_width=True)
-
-                # Sau mỗi 2 biểu đồ → tạo hàng mới
-                if i % 2 == 1 and i < len(metrics_list) - 1:
-                    cols = st.columns(2)
-
-        # -----------------
-        # 7.2 Tab Weekly
-        # -----------------
-        with tab_cmp_weekly:
-
-            df_weekly = df_eval.copy()
-            df_weekly["Date"] = pd.to_datetime(df_weekly["Date"])
-
-            # Convert thành tuần
-            df_weekly["WeekStart"] = df_weekly["Date"].dt.to_period("W").apply(lambda r: r.start_time)
-            df_weekly["WeekEnd"] = df_weekly["Date"].dt.to_period("W").apply(lambda r: r.end_time)
-
-            # Gom weekly (sum cho traffic)
-            # Lấy toàn bộ cột Daily_*
-            daily_cols = [c for c in df_weekly.columns if c.startswith("Daily")]
-
-            # Tạo dict động cho agg
-            agg_dict = {c: "sum" for c in daily_cols}
-
-            # Group
-            df_weekly = (
-                df_weekly.groupby(["WeekStart", "WeekEnd"])
-                .agg(agg_dict)
-                .reset_index()
-            )
-
-            # Đổi tên cột Daily* → Weekly*
-            df_weekly = df_weekly.rename(
-                columns={c: c.replace("Daily", "Weekly") for c in daily_cols}
-            )
-
-            # Format range: YYYY-MM-DD → YYYY-MM-DD
-            df_weekly["WeekRange"] = df_weekly["WeekStart"].dt.strftime("%Y-%m-%d") + " → " + \
-                                     df_weekly["WeekEnd"].dt.strftime("%Y-%m-%d")
-
-            # ==== Chart multi-line Weekly (Actual + Models) ====
-            st.subheader("WEEKLY (Actual + Models) – 3 tháng gần nhất")
-
-            frames = [
-                df_weekly[["WeekStart", "WeeklyActual"]]
-                .rename(columns={"WeeklyActual": "WeeklyValue"})
-                .assign(Source="Actual")
-            ]
-
-            for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
-                col_name = f"Weekly_{m_name}"
-                if col_name in df_weekly.columns and df_weekly[col_name].notna().any():
-                    frames.append(
-                        df_weekly[["WeekStart", col_name]]
-                        .rename(columns={col_name: "WeeklyValue"})
-                        .assign(Source=m_name)
+                            anchor="middle",  # căn giữa
+                        ),
                     )
 
-            if frames:
-                df_chart_w = pd.concat(frames, ignore_index=True)
-                df_chart_w = df_chart_w.sort_values("WeekStart")
+                    cols[i % 2].altair_chart(chart, use_container_width=True)
 
-                chart_weekly = (
-                    alt.Chart(df_chart_w)
-                    .mark_line(point=True)
-                    .encode(
-                        x=alt.X("WeekStart:T", title="Week (Start Date)"),
-                        y=alt.Y("WeeklyValue:Q", title="Vehicles / week"),
-                        color=alt.Color("Source:N", title="Series"),
-                        tooltip=[
-                            alt.Tooltip("WeekStart:T", title="Week Start"),
-                            alt.Tooltip("Source:N", title="Series"),
-                            alt.Tooltip("WeeklyValue:Q", title="Vehicles/week", format=","),
-                        ],
+                    # Sau mỗi 2 biểu đồ → tạo hàng mới
+                    if i % 2 == 1 and i < len(metrics_list) - 1:
+                        cols = st.columns(2)
+
+                # ==== Xếp hạng model theo từng tiêu chí ====
+                st.subheader("🏅 Xếp hạng model theo từng tiêu chí")
+                ranking_specs = [
+                    ("MSE", True, "MSE (thấp → cao)"),
+                    ("RMSE", True, "RMSE (thấp → cao)"),
+                    ("MAE", True, "MAE (thấp → cao)"),
+                    ("MAPE (%)", True, "MAPE (thấp → cao)"),
+                    ("SMAPE (%)", True, "SMAPE (thấp → cao)"),
+                    ("R²", False, "R² (cao → thấp)"),
+                ]
+
+                rank_cols = st.columns(3)
+                for idx, (metric, ascending, title) in enumerate(ranking_specs):
+                    if metric not in df_metrics.columns:
+                        continue
+                    df_rank = (
+                        df_metrics.sort_values(metric, ascending=ascending)
+                        .reset_index(drop=True)
                     )
-                    .properties(height=300)
-                )
-                st.altair_chart(chart_weekly, use_container_width=True)
-
-                with st.expander("Xem bảng Weekly (Actual + Models) – tổng hợp theo tuần"):
-                    df_weekly_show = df_weekly.copy()
-                    for c in df_weekly_show.columns:
-                        if c.startswith("Weekly"):
-                            df_weekly_show[c] = df_weekly_show[c].round().astype("Int64").apply(lambda x: f"{x:,.0f}")
-                    st.dataframe(
-                        df_weekly_show[["WeekRange"] +
-                                  [c for c in df_weekly_show.columns if
-                                   c not in ["Date", "Year", "Week", "WeekRange", "WeekStart", "WeekEnd"]]],
-                        use_container_width=True
+                    df_rank.insert(0, "Thứ hạng", df_rank.index + 1)
+                    rank_cols[idx % 3].markdown(f"**{title}**")
+                    rank_cols[idx % 3].dataframe(
+                        df_rank[["Thứ hạng", "Model", metric]],
+                        use_container_width=True,
                     )
             else:
                 st.info("Không có series nào (GRU/RNN/LSTM/ARIMA/SARIMA) để hiển thị.")
 
-            # ==== Metrics tổng Weekly cho từng model (nếu có cột) ====
-            metrics_rows = []
+        with tab_cmp_weekly:
+            st.subheader("WEEKLY (Actual + Models) – 3 tháng gần nhất")
 
-            for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
-                col_name = f"Weekly_{m_name}"
-                if col_name not in df_weekly.columns:
-                    continue
+            df_weekly = df_eval.copy()
+            df_weekly["Date"] = pd.to_datetime(df_weekly["Date"])
+            df_weekly["WeekStart"] = (
+                df_weekly["Date"].dt.to_period("W-MON").apply(lambda r: r.start_time)
+            )
+            df_weekly["WeekEnd"] = df_weekly["WeekStart"] + pd.Timedelta(days=6)
 
-                valid = df_weekly[["WeeklyActual", col_name]].dropna()
-                if valid.empty:
-                    continue
+            daily_cols = [c for c in df_weekly.columns if c.startswith("Daily")]
 
-                actual = valid["WeeklyActual"].values.astype(float)
-                pred = valid[col_name].values.astype(float)
-
-                # Sai số
-                mse = mean_squared_error(actual, pred)
-                rmse = np.sqrt(mse)
-                mae = mean_absolute_error(actual, pred)
-
-                mape = (
-                        np.mean(np.abs((actual - pred) / np.where(actual == 0, np.nan, actual))) * 100
-                )
-
-                denom = np.abs(actual) + np.abs(pred)
-                smape = (
-                        np.mean(2.0 * np.abs(pred - actual) / np.where(denom == 0, 1.0, denom)) * 100
-                )
-
-                r2 = r2_score(actual, pred)
-
-                metrics_rows.append(
-                    {
-                        "Model": m_name,
-                        "MSE": mse,
-                        "RMSE": rmse,
-                        "MAE": mae,
-                        "MAPE (%)": mape,
-                        "SMAPE (%)": smape,
-                        "R²": r2,
-                    }
-                )
-
-            if metrics_rows:
-                st.subheader("Đánh giá sai số theo từng model – dữ liệu Weekly (3 tháng gần nhất)")
-                df_metrics_weekly = pd.DataFrame(metrics_rows)
-
-                for c in ["MSE", "RMSE", "MAE"]:
-                    df_metrics_weekly[c] = df_metrics_weekly[c].round(2)
-                for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
-                    df_metrics_weekly[c] = df_metrics_weekly[c].round(3)
-
-                # ---- Format số theo dạng 000,000,000.00 ----
-                format_cols = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
-                df_formatted_weekly = df_metrics_weekly.copy()
-                for c in ["MSE", "RMSE", "MAE"]:
-                    df_formatted_weekly[c] = df_formatted_weekly[c].apply(lambda x: f"{x:,.2f}")
-                for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
-                    df_formatted_weekly[c] = df_formatted_weekly[c].apply(lambda x: f"{x:,.3f}")
-
-                st.dataframe(df_formatted_weekly, use_container_width=True)
-
+            if not daily_cols:
+                st.info("Không có dữ liệu Weekly để hiển thị.")
             else:
-                st.info("Không có dữ liệu Weekly để tính metrics.")
-
-            # ==== Biểu đồ cột cho từng đánh giá ====
-            st.subheader("📊 Biểu đồ cột cho từng đánh giá sai số")
-            metrics_list = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
-            cols = st.columns(2)  # 2 cột mỗi hàng
-
-            for i, metric in enumerate(metrics_list):
-                chart = (
-                    alt.Chart(df_metrics_weekly)
-                    .mark_bar()
-                    .encode(
-                        x=alt.X("Model:N", title="Model", axis=alt.Axis(labelAngle=0)),
-                        y=alt.Y(f"{metric}:Q", title=metric),
-                        tooltip=["Model", metric]
-                    )
-                    .properties(
-                        height=300,
-                        title=alt.TitleParams(
-                            f"{metric}",
-                            fontSize=24,
-                            fontWeight="bold",
-                            color="#333",
-                            anchor="middle"  # căn giữa
-                        )
-                    )
+                agg_dict = {c: "sum" for c in daily_cols}
+                df_weekly = (
+                    df_weekly.groupby(["WeekStart", "WeekEnd"])
+                    .agg(agg_dict)
+                    .reset_index()
+                )
+                df_weekly = df_weekly.rename(
+                    columns={c: c.replace("Daily", "Weekly") for c in daily_cols}
                 )
 
-                # vẽ vào đúng cột
-                cols[i % 2].altair_chart(chart, use_container_width=True)
+                if not df_weekly.empty:
+                    df_weekly["WeekRange"] = (
+                        df_weekly["WeekStart"].dt.strftime("%Y-%m-%d")
+                        + " → "
+                        + df_weekly["WeekEnd"].dt.strftime("%Y-%m-%d")
+                    )
 
-                # tạo hàng kế tiếp sau mỗi 2 chart
-                if i % 2 == 1 and i < len(metrics_list) - 1:
-                    cols = st.columns(2)
+                    frames_w = [
+                        df_weekly[["WeekStart", "WeeklyActual"]]
+                        .rename(columns={"WeeklyActual": "WeeklyValue"})
+                        .assign(Source="Actual")
+                    ]
+
+                    for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
+                        col_name = f"Weekly_{m_name}"
+                        if col_name in df_weekly.columns and df_weekly[col_name].notna().any():
+                            frames_w.append(
+                                df_weekly[["WeekStart", col_name]]
+                                .rename(columns={col_name: "WeeklyValue"})
+                                .assign(Source=m_name)
+                            )
+
+                    if frames_w:
+                        df_chart_w = pd.concat(frames_w, ignore_index=True).sort_values(
+                            "WeekStart"
+                        )
+                        base_weekly = alt.Chart(df_chart_w).encode(
+                            x=alt.X("WeekStart:T", title="Tuần (ngày bắt đầu)"),
+                            y=alt.Y("WeeklyValue:Q", title="Vehicles / week"),
+                            color=alt.Color("Source:N", title="Series"),
+                        )
+
+                        chart_weekly = alt.layer(
+                            base_weekly.mark_line(point=True),
+                            base_weekly.mark_text(
+                                align="left",
+                                dx=6,
+                                dy=-6,
+                                fontWeight="bold",
+                                color="#111",
+                            ).encode(text=alt.Text("WeeklyValue:Q", format=",.0f")),
+                        ).encode(
+                            tooltip=[
+                                alt.Tooltip("WeekStart:T", title="Week Start"),
+                                alt.Tooltip("Source:N", title="Series"),
+                                alt.Tooltip(
+                                    "WeeklyValue:Q", title="Vehicles/week", format="," 
+                                ),
+                            ]
+                        ).properties(height=300)
+                        st.altair_chart(chart_weekly, use_container_width=True)
+
+                    with st.expander(
+                        "🔍 Xem thống kê lưu lượng giao thông theo từng tuần (Actual + Models)"
+                    ):
+                        df_show_w = df_weekly.copy()
+                        for c in df_show_w.columns:
+                            if c.startswith("Weekly"):
+                                df_show_w[c] = (
+                                    df_show_w[c]
+                                    .round()
+                                    .astype("Int64")
+                                    .apply(lambda x: f"{x:,.0f}")
+                                )
+                        st.dataframe(
+                            df_show_w[
+                                ["WeekRange"]
+                                + [
+                                    c
+                                    for c in df_show_w.columns
+                                    if c
+                                    not in ["Date", "WeekStart", "WeekEnd", "WeekRange"]
+                                ]
+                            ],
+                            use_container_width=True,
+                        )
+
+                    metrics_rows = []
+
+                    for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
+                        col_name = f"Weekly_{m_name}"
+                        if col_name not in df_weekly.columns:
+                            continue
+
+                        valid = df_weekly[["WeeklyActual", col_name]].dropna()
+                        if valid.empty:
+                            continue
+
+                        actual = valid["WeeklyActual"].values.astype(float)
+                        pred = valid[col_name].values.astype(float)
+
+                        # Sai số
+                        mse = mean_squared_error(actual, pred)
+                        rmse = np.sqrt(mse)
+                        mae = mean_absolute_error(actual, pred)
+
+                        mape = (
+                            np.mean(
+                                np.abs(
+                                    (actual - pred)
+                                    / np.where(actual == 0, np.nan, actual)
+                                )
+                            )
+                            * 100
+                        )
+
+                        denom = np.abs(actual) + np.abs(pred)
+                        smape = (
+                            np.mean(
+                                2.0
+                                * np.abs(pred - actual)
+                                / np.where(denom == 0, 1.0, denom)
+                            )
+                            * 100
+                        )
+
+                        r2 = r2_score(actual, pred)
+
+                        metrics_rows.append(
+                            {
+                                "Model": m_name,
+                                "MSE": mse,
+                                "RMSE": rmse,
+                                "MAE": mae,
+                                "MAPE (%)": mape,
+                                "SMAPE (%)": smape,
+                                "R²": r2,
+                            }
+                        )
+
+                    if metrics_rows:
+                        st.subheader("Đánh giá sai số theo từng model – dữ liệu Weekly (3 tháng gần nhất)")
+                        df_metrics_weekly = pd.DataFrame(metrics_rows)
+
+                        for c in ["MSE", "RMSE", "MAE"]:
+                            df_metrics_weekly[c] = df_metrics_weekly[c].round(2)
+                        for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
+                            df_metrics_weekly[c] = df_metrics_weekly[c].round(3)
+
+                        # ---- Format số theo dạng 000,000,000.00 ----
+                        df_formatted_weekly = df_metrics_weekly.copy()
+                        for c in ["MSE", "RMSE", "MAE"]:
+                            df_formatted_weekly[c] = df_formatted_weekly[c].apply(
+                                lambda x: f"{x:,.2f}"
+                            )
+                        for c in ["MAPE (%)", "SMAPE (%)", "R²"]:
+                            df_formatted_weekly[c] = df_formatted_weekly[c].apply(
+                                lambda x: f"{x:,.3f}"
+                            )
+
+                        st.dataframe(df_formatted_weekly, use_container_width=True)
+
+                        st.subheader("📊 Biểu đồ cột cho từng đánh giá sai số")
+                        metrics_list = [
+                            "MSE",
+                            "RMSE",
+                            "MAE",
+                            "MAPE (%)",
+                            "SMAPE (%)",
+                            "R²",
+                        ]
+                        cols = st.columns(2)  # 2 cột mỗi hàng
+
+                        for i, metric in enumerate(metrics_list):
+                            value_format = ".2f" if metric not in ["MAPE (%)", "SMAPE (%)", "R²"] else ".3f"
+                            base = (
+                                alt.Chart(df_metrics_weekly)
+                                .encode(
+                                    x=alt.X(
+                                        "Model:N",
+                                        title="Model",
+                                        axis=alt.Axis(labelAngle=0),
+                                    ),
+                                    y=alt.Y(f"{metric}:Q", title=metric),
+                                    tooltip=[
+                                        alt.Tooltip("Model:N", title="Model"),
+                                        alt.Tooltip(
+                                            f"{metric}:Q", title=metric, format=value_format
+                                        ),
+                                    ],
+                                )
+                            )
+                            chart = alt.layer(
+                                base.mark_bar(),
+                                base.mark_text(
+                                    dy=-6,
+                                    color="#111",
+                                    fontWeight="bold",
+                                ).encode(text=alt.Text(f"{metric}:Q", format=value_format)),
+                            ).properties(
+                                height=300,
+                                title=alt.TitleParams(
+                                    f"{metric}",
+                                    fontSize=24,
+                                    fontWeight="bold",
+                                    color="#333",
+                                    anchor="middle",  # căn giữa
+                                ),
+                            )
+
+                            # vẽ vào đúng cột
+                            cols[i % 2].altair_chart(chart, use_container_width=True)
+
+                            # tạo hàng kế tiếp sau mỗi 2 chart
+                            if i % 2 == 1 and i < len(metrics_list) - 1:
+                                cols = st.columns(2)
+
+                        # ==== Xếp hạng model theo từng tiêu chí ====
+                        st.subheader("🏅 Xếp hạng model Weekly theo từng tiêu chí")
+                        ranking_specs = [
+                            ("MSE", True, "MSE (thấp → cao)"),
+                            ("RMSE", True, "RMSE (thấp → cao)"),
+                            ("MAE", True, "MAE (thấp → cao)"),
+                            ("MAPE (%)", True, "MAPE (thấp → cao)"),
+                            ("SMAPE (%)", True, "SMAPE (thấp → cao)"),
+                            ("R²", False, "R² (cao → thấp)"),
+                        ]
+
+                        rank_cols = st.columns(3)
+                        for idx, (metric, ascending, title) in enumerate(ranking_specs):
+                            if metric not in df_metrics_weekly.columns:
+                                continue
+                            df_rank_w = (
+                                df_metrics_weekly.sort_values(metric, ascending=ascending)
+                                .reset_index(drop=True)
+                            )
+                            df_rank_w.insert(0, "Thứ hạng", df_rank_w.index + 1)
+                            rank_cols[idx % 3].markdown(f"**{title}**")
+                            rank_cols[idx % 3].dataframe(
+                                df_rank_w[["Thứ hạng", "Model", metric]],
+                                use_container_width=True,
+                            )
+                    else:
+                        st.info("Không có dữ liệu Weekly để tính metrics.")
+                else:
+                    st.info("Không có dữ liệu Weekly để tính metrics.")
 
         # -----------------
-        # 7.2 Tab Monthly
+        # 7.3 Tab Monthly
         # -----------------
         with tab_cmp_monthly:
             df_monthly = df_eval.copy()
@@ -2616,21 +3283,28 @@ def main():
 
             df_chart_m = pd.concat(frames_m, ignore_index=True).sort_values("MonthStart")
 
-            chart_monthly = (
-                alt.Chart(df_chart_m)
-                .mark_line(point=True)
-                .encode(
-                    x=alt.X("MonthStart:T", title="Month (Start Date)"),
-                    y=alt.Y("MonthlyValue:Q", title="Vehicles / month"),
-                    color=alt.Color("Source:N"),
-                    tooltip=[
-                        alt.Tooltip("MonthStart:T", title="Month Start"),
-                        alt.Tooltip("Source:N", title="Series"),
-                        alt.Tooltip("MonthlyValue:Q", format=","),
-                    ],
-                )
-                .properties(height=300)
+            base_monthly = alt.Chart(df_chart_m).encode(
+                x=alt.X("MonthStart:T", title="Month (Start Date)"),
+                y=alt.Y("MonthlyValue:Q", title="Vehicles / month"),
+                color=alt.Color("Source:N"),
             )
+
+            chart_monthly = alt.layer(
+                base_monthly.mark_line(point=True),
+                base_monthly.mark_text(
+                    align="left",
+                    dx=6,
+                    dy=-6,
+                    fontWeight="bold",
+                    color="#111",
+                ).encode(text=alt.Text("MonthlyValue:Q", format=",.0f")),
+            ).encode(
+                tooltip=[
+                    alt.Tooltip("MonthStart:T", title="Month Start"),
+                    alt.Tooltip("Source:N", title="Series"),
+                    alt.Tooltip("MonthlyValue:Q", format=","),
+                ]
+            ).properties(height=300)
 
             st.altair_chart(chart_monthly, use_container_width=True)
 
@@ -2692,7 +3366,6 @@ def main():
                     df_metrics_monthly[c] = df_metrics_monthly[c].round(3)
 
                 # ---- Format số theo dạng 000,000,000.00 ----
-                format_cols = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
                 df_formatted_monthly = df_metrics_monthly.copy()
                 for c in ["MSE", "RMSE", "MAE"]:
                     df_formatted_monthly[c] = df_formatted_monthly[c].apply(lambda x: f"{x:,.2f}")
@@ -2701,36 +3374,80 @@ def main():
 
                 st.dataframe(df_formatted_monthly, use_container_width=True)
 
-            # ==== Biểu đồ cột cho từng đánh giá ====
-            st.subheader("📊 Biểu đồ cột cho từng đánh giá sai số")
-            metrics_list = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
-            cols = st.columns(2)
+                # ==== Biểu đồ cột cho từng đánh giá ====
+                st.subheader("📊 Biểu đồ cột cho từng đánh giá sai số")
+                metrics_list = ["MSE", "RMSE", "MAE", "MAPE (%)", "SMAPE (%)", "R²"]
+                cols = st.columns(2)
 
-            for i, metric in enumerate(metrics_list):
-                chart = (
-                    alt.Chart(df_metrics_monthly)
-                    .mark_bar()
-                    .encode(
-                        x=alt.X("Model:N", title="Model", axis=alt.Axis(labelAngle=0)),
-                        y=alt.Y(f"{metric}:Q", title=metric),
-                        tooltip=["Model", metric]
+                for i, metric in enumerate(metrics_list):
+                    value_format = ".2f" if metric not in ["MAPE (%)", "SMAPE (%)", "R²"] else ".3f"
+                    base = (
+                        alt.Chart(df_metrics_monthly)
+                        .encode(
+                            x=alt.X("Model:N", title="Model", axis=alt.Axis(labelAngle=0)),
+                            y=alt.Y(f"{metric}:Q", title=metric),
+                            tooltip=[
+                                alt.Tooltip("Model:N", title="Model"),
+                                alt.Tooltip(f"{metric}:Q", title=metric, format=value_format),
+                            ],
+                        )
                     )
-                    .properties(
+                    chart = alt.layer(
+                        base.mark_bar(),
+                        base.mark_text(
+                            dy=-6,
+                            color="#111",
+                            fontWeight="bold",
+                        ).encode(text=alt.Text(f"{metric}:Q", format=value_format)),
+                    ).properties(
                         height=300,
                         title=alt.TitleParams(
                             f"{metric}",
                             fontSize=24,
                             fontWeight="bold",
                             color="#333",
-                            anchor="middle"  # căn giữa
-                        )
+                            anchor="middle",  # căn giữa
+                        ),
                     )
-                )
 
-                cols[i % 2].altair_chart(chart, use_container_width=True)
+                    cols[i % 2].altair_chart(chart, use_container_width=True)
 
-                if i % 2 == 1 and i < len(metrics_list) - 1:
-                    cols = st.columns(2)
+                    if i % 2 == 1 and i < len(metrics_list) - 1:
+                        cols = st.columns(2)
+
+                # ==== Xếp hạng model theo từng tiêu chí ====
+                st.subheader("🏅 Xếp hạng model Monthly theo từng tiêu chí")
+                ranking_specs = [
+                    ("MSE", True, "MSE (thấp → cao)"),
+                    ("RMSE", True, "RMSE (thấp → cao)"),
+                    ("MAE", True, "MAE (thấp → cao)"),
+                    ("MAPE (%)", True, "MAPE (thấp → cao)"),
+                    ("SMAPE (%)", True, "SMAPE (thấp → cao)"),
+                    ("R²", False, "R² (cao → thấp)"),
+                ]
+
+                rank_cols = st.columns(3)
+                for idx, (metric, ascending, title) in enumerate(ranking_specs):
+                    if metric not in df_metrics_monthly.columns:
+                        continue
+                    df_rank_m = (
+                        df_metrics_monthly.sort_values(metric, ascending=ascending)
+                        .reset_index(drop=True)
+                    )
+                    df_rank_m.insert(0, "Thứ hạng", df_rank_m.index + 1)
+                    rank_cols[idx % 3].markdown(f"**{title}**")
+                    rank_cols[idx % 3].dataframe(
+                        df_rank_m[["Thứ hạng", "Model", metric]],
+                        use_container_width=True,
+                    )
+            else:
+                st.info("Không có dữ liệu Monthly để tính metrics.")
+
+    elif tab == "Roadmap Assistant":
+        if city == "HoChiMinh":
+            st.info("Roadmap Assistant hiện giữ nguyên trải nghiệm cho TP.HCM.")
+        else:
+            st.warning("Khu vực chưa được support")
 
 
 if __name__ == "__main__":
