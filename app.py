@@ -1025,11 +1025,21 @@ def render_hcmc_departure_advisor(route_id: str, routes_geo_all: pd.DataFrame):
     now = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh")
     today_wd = now.weekday()
 
-    # Chọn khung giờ quan tâm
-    window_label = st.selectbox(
+    # Chọn khung giờ quan tâm (hiển thị trực quan, không dropdown)
+    window_options = ["Sáng (06:00–09:00)", "Chiều (16:00–19:00)"]
+    default_idx = 0
+    if "hcmc_advisor_window" in st.session_state:
+        try:
+            default_idx = window_options.index(st.session_state["hcmc_advisor_window"])
+        except ValueError:
+            default_idx = 0
+
+    window_label = st.radio(
         "Chọn khung giờ bạn quan tâm",
-        ["Sáng (06:00–09:00)", "Chiều (16:00–19:00)"],
+        window_options,
+        index=default_idx,
         key="hcmc_advisor_window",
+        horizontal=True,
     )
 
     if window_label.startswith("Sáng"):
@@ -1171,206 +1181,6 @@ def render_hcmc_departure_advisor(route_id: str, routes_geo_all: pd.DataFrame):
     )
 
     st.altair_chart(chart, use_container_width=True)
-
-def render_hcmc_weekly_pattern(route_id: str, routes_geo_all: pd.DataFrame):
-    """
-    Hiển thị 'heatmap' mẫu hình kẹt xe theo giờ & thứ trong tuần
-    cho một tuyến HCMC, dạng bảng màu (pandas.style).
-    """
-    out = _load_hcmc_series_for_route(route_id, routes_geo_all)
-    if out is None:
-        st.info("Không đủ dữ liệu lịch sử để hiển thị mẫu hình tuần cho tuyến này.")
-        return
-
-    s, full_name, street_name = out
-
-    df = s.to_frame(name="is_congested")
-    if df.empty:
-        st.info("Không đủ dữ liệu lịch sử để hiển thị mẫu hình tuần cho tuyến này.")
-        return
-
-    # Chuẩn hóa thời gian
-    df["DateTime"] = pd.to_datetime(df.index)
-    df["hour"] = df["DateTime"].dt.hour
-    df["weekday"] = df["DateTime"].dt.weekday  # 0=Mon ... 6=Sun
-
-    weekday_map = {
-        0: "Thứ 2",
-        1: "Thứ 3",
-        2: "Thứ 4",
-        3: "Thứ 5",
-        4: "Thứ 6",
-        5: "Thứ 7",
-        6: "Chủ nhật",
-    }
-    df["weekday_label"] = df["weekday"].map(weekday_map)
-
-    # Lấy p_cong liên tục (0..1); fallback sang is_congested nếu thiếu
-    if "p_cong" in df.columns:
-        df["p_cong"] = df["p_cong"].astype(float)
-    else:
-        df["p_cong"] = df["is_congested"].astype(float)
-    df["p_cong"] = df["p_cong"].clip(0.0, 1.0)
-
-    st.subheader("Mẫu hình kẹt xe trong tuần theo giờ")
-    st.markdown(
-        "Heatmap dùng xác suất kẹt liên tục, bỏ qua các ô thiếu mẫu để tránh 0%/100% giả."
-    )
-
-    with st.expander("Tùy chọn heatmap", expanded=False):
-        min_count = st.slider(
-            "Số mẫu tối thiểu để hiển thị (MIN_COUNT)",
-            min_value=5,
-            max_value=50,
-            value=10,
-            step=1,
-        )
-        alpha = st.slider(
-            "Độ làm mượt (alpha)",
-            min_value=0.0,
-            max_value=10.0,
-            value=2.0,
-            step=0.5,
-        )
-        show_coverage = st.checkbox(
-            "Hiển thị heatmap coverage (count)", value=False
-        )
-
-    grp = df.groupby(["weekday_label", "hour"], as_index=False).agg(
-        count=("p_cong", "size"),
-        mean_p=("p_cong", "mean"),
-    )
-    if grp.empty:
-        st.info("Không đủ dữ liệu lịch sử để hiển thị mẫu hình tuần cho tuyến này.")
-        return
-
-    # Reindex đủ 7x24 để kiểm soát coverage
-    order_idx = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"]
-    hour_order = list(range(24))
-    idx = pd.MultiIndex.from_product(
-        [order_idx, hour_order], names=["weekday_label", "hour"]
-    )
-    agg = grp.set_index(["weekday_label", "hour"]).reindex(idx)
-    agg["count"] = agg["count"].fillna(0)
-
-    # Làm mượt kiểu Beta/Laplace, kéo về 0.5 khi mẫu ít
-    mean_p = agg["mean_p"].fillna(0.0)
-    counts = agg["count"]
-    alpha = float(alpha)
-    p_smooth = np.where(
-        counts > 0,
-        (mean_p * counts + 0.5 * alpha) / (counts + alpha),
-        np.nan,
-    )
-    p_smooth = np.clip(p_smooth, 0.0, 1.0)
-    p_smooth = np.where(counts >= min_count, p_smooth, np.nan)
-
-    agg = agg.reset_index()
-    agg["p_smooth"] = p_smooth
-    agg["CongestionPct"] = agg["p_smooth"] * 100
-    agg["HourStr"] = agg["hour"].astype(int).astype(str).str.zfill(2) + ":00"
-
-    pivot = agg.pivot_table(
-        index="weekday_label",
-        columns="HourStr",
-        values="CongestionPct",
-        aggfunc="mean",
-    )
-
-    pivot = pivot.reindex(order_idx)
-    pivot = pivot.reindex([f"{h:02d}:00" for h in hour_order], axis=1)
-    pivot_float = pivot.astype("float")
-
-    def style_na(v):
-        if pd.isna(v):
-            return "background-color: #ffffff; color: #999999;"
-        return ""
-
-    styled = (
-        pivot_float.style
-        .background_gradient(cmap="RdYlGn_r", axis=None)
-        .format("{:.1f}", na_rep="")
-        .applymap(style_na)
-    )
-
-    st.dataframe(styled, use_container_width=True)
-
-    # Heatmap Altair với tooltip
-    heat_df = agg.dropna(subset=["p_smooth"]).copy()
-    if not heat_df.empty:
-        heat_df["weekday_label"] = pd.Categorical(
-            heat_df["weekday_label"], categories=order_idx, ordered=True
-        )
-        heatmap = (
-            alt.Chart(heat_df)
-            .mark_rect()
-            .encode(
-                x=alt.X("HourStr:O", title="Giờ", sort=[f"{h:02d}:00" for h in hour_order]),
-                y=alt.Y("weekday_label:O", title="Thứ", sort=order_idx),
-                color=alt.Color(
-                    "CongestionPct:Q",
-                    title="% kẹt (đã làm mượt)",
-                    scale=alt.Scale(scheme="RdYlGn_r", domain=[0, 100]),
-                ),
-                tooltip=[
-                    alt.Tooltip("weekday_label:N", title="Thứ"),
-                    alt.Tooltip("HourStr:N", title="Giờ"),
-                    alt.Tooltip("CongestionPct:Q", title="% kẹt", format=".1f"),
-                    alt.Tooltip("count:Q", title="Số mẫu", format=".0f"),
-                ],
-            )
-            .properties(height=300, title="Heatmap kẹt xe (p_cong đã làm mượt)")
-        )
-        st.altair_chart(heatmap, use_container_width=True)
-
-    st.caption(f"Ô trống = thiếu dữ liệu (count < {min_count}).")
-
-    # Tùy chọn coverage
-    if show_coverage:
-        coverage_df = agg.copy()
-        coverage_df["coverage"] = np.where(coverage_df["count"] >= min_count, coverage_df["count"], np.nan)
-        coverage_df = coverage_df.dropna(subset=["coverage"])
-        if coverage_df.empty:
-            st.info("Chưa có ô nào đạt ngưỡng mẫu để hiển thị coverage.")
-        else:
-            coverage_df["weekday_label"] = pd.Categorical(
-                coverage_df["weekday_label"], categories=order_idx, ordered=True
-            )
-            cov_chart = (
-                alt.Chart(coverage_df)
-                .mark_rect()
-                .encode(
-                    x=alt.X("HourStr:O", title="Giờ", sort=[f"{h:02d}:00" for h in hour_order]),
-                    y=alt.Y("weekday_label:O", title="Thứ", sort=order_idx),
-                    color=alt.Color(
-                        "coverage:Q",
-                        title="Số mẫu (>= ngưỡng)",
-                        scale=alt.Scale(scheme="blues"),
-                    ),
-                    tooltip=[
-                        alt.Tooltip("weekday_label:N", title="Thứ"),
-                        alt.Tooltip("HourStr:N", title="Giờ"),
-                        alt.Tooltip("count:Q", title="Số mẫu", format=".0f"),
-                    ],
-                )
-                .properties(height=240, title="Coverage (ô đủ mẫu)")
-            )
-            st.altair_chart(cov_chart, use_container_width=True)
-
-        valid_counts = agg["count"][agg["count"] >= min_count]
-        coverage_cells = int(valid_counts.count())
-        total_cells = len(order_idx) * len(hour_order)
-        coverage_pct = (coverage_cells / total_cells * 100) if total_cells else 0
-        if not valid_counts.empty:
-            st.write(
-                f"Coverage: {coverage_cells}/{total_cells} ô đạt ngưỡng (≈ {coverage_pct:.1f}%). "
-                f"Số mẫu min/median/max trong các ô hợp lệ: "
-                f"{int(valid_counts.min())} / {int(valid_counts.median())} / {int(valid_counts.max())}."
-            )
-        else:
-            st.write(
-                f"Coverage: 0/{total_cells} ô đạt ngưỡng (count < {min_count} cho tất cả)."
-            )
 
 
 # =====================================================
@@ -2232,8 +2042,6 @@ def main():
 
         # 2) Trợ lý chọn giờ đi đường (dựa trên lịch sử)
         render_hcmc_departure_advisor(route_id, routes_geo_all)
-        # 3) Heatmap mẫu hình cả tuần
-        render_hcmc_weekly_pattern(route_id, routes_geo_all)
         st.markdown("---")
         render_hcmc_eval_summary_for_route(route_id)
         return
