@@ -5,7 +5,37 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from filelock import FileLock
+
+try:
+    from filelock import FileLock
+except ModuleNotFoundError:  # pragma: no cover - fallback for environments missing dependency
+    import fcntl
+
+    class FileLock:  # type: ignore[misc]
+        """Minimal POSIX file lock used when filelock is unavailable."""
+
+        def __init__(self, lock_file):
+            self.lock_file = Path(lock_file)
+            self._handle = None
+
+        def acquire(self, timeout=None):
+            self.lock_file.parent.mkdir(parents=True, exist_ok=True)
+            self._handle = open(self.lock_file, "w")
+            fcntl.flock(self._handle, fcntl.LOCK_EX)
+            return True
+
+        def release(self):
+            if self._handle:
+                fcntl.flock(self._handle, fcntl.LOCK_UN)
+                self._handle.close()
+                self._handle = None
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.release()
 
 from modules.data_loader import list_zones
 from modules.model_manager import load_model_context
