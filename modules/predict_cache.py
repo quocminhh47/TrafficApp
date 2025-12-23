@@ -373,7 +373,6 @@ def ensure_forecast_cache(
 
         if needs_build:
             if st_mod is not None:
-                st_mod.info("Đang cập nhật dữ liệu dự báo…")
                 with st_mod.spinner("Đang cập nhật dữ liệu dự báo…"):
                     build_forecast_cache(city, zone, route_id, file_name)
             else:

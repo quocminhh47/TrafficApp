@@ -2730,6 +2730,82 @@ def main():
             else:
                 st.info("Không có series nào (GRU/RNN/LSTM/ARIMA/SARIMA) để hiển thị.")
 
+            # ==== Lưu lượng trung bình theo ngày trong tuần ====
+            df_weekday = (
+                df_eval[["Date", "DailyActual"]]
+                .dropna(subset=["Date", "DailyActual"])
+                .copy()
+            )
+
+            if not df_weekday.empty:
+                df_weekday["Weekday"] = (
+                    pd.to_datetime(df_weekday["Date"]).dt.dayofweek
+                )
+                weekday_labels = {
+                    0: "Thứ 2",
+                    1: "Thứ 3",
+                    2: "Thứ 4",
+                    3: "Thứ 5",
+                    4: "Thứ 6",
+                    5: "Thứ 7",
+                    6: "Chủ nhật",
+                }
+                df_weekday["WeekdayLabel"] = df_weekday["Weekday"].map(
+                    weekday_labels
+                )
+
+                df_weekday_avg = (
+                    df_weekday
+                    .groupby(["Weekday", "WeekdayLabel"], as_index=False)[
+                        "DailyActual"
+                    ]
+                    .mean()
+                    .rename(columns={"DailyActual": "VehiclesPerDay"})
+                    .sort_values("Weekday")
+                )
+                df_weekday_avg["VehiclesPerDay"] = df_weekday_avg[
+                    "VehiclesPerDay"
+                ].round(2)
+
+                st.markdown(
+                    "#### Lưu lượng trung bình theo ngày trong tuần (3 tháng gần nhất)"
+                )
+                st.caption(
+                    f"Khoảng dữ liệu: {df_eval['Date'].min().date()} → {df_eval['Date'].max().date()}"
+                )
+
+                base_weekday = alt.Chart(df_weekday_avg).encode(
+                    x=alt.X(
+                        "WeekdayLabel:O",
+                        title="Ngày trong tuần",
+                        sort=list(weekday_labels.values()),
+                    ),
+                    y=alt.Y(
+                        "VehiclesPerDay:Q",
+                        title="Lưu lượng trung bình (vehicles/ngày)",
+                    ),
+                )
+
+                chart_weekday = alt.layer(
+                    base_weekday.mark_bar(),
+                    base_weekday.mark_text(
+                        dy=-6, color="#111", fontWeight="bold"
+                    ).encode(
+                        text=alt.Text("VehiclesPerDay:Q", format=",.1f")
+                    ),
+                ).encode(
+                    tooltip=[
+                        alt.Tooltip("WeekdayLabel:N", title="Ngày"),
+                        alt.Tooltip(
+                            "VehiclesPerDay:Q",
+                            title="Lưu lượng trung bình",
+                            format=",.2f",
+                        ),
+                    ]
+                ).properties(height=320)
+
+                st.altair_chart(chart_weekday, use_container_width=True)
+
             # ==== Metrics tổng 3 tháng cho từng model (nếu có cột) ====
             metrics_rows = []
             for m_name in ["GRU", "RNN", "LSTM", "ARIMA", "SARIMA"]:
