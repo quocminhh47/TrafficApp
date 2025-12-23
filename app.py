@@ -1172,99 +1172,6 @@ def render_hcmc_departure_advisor(route_id: str, routes_geo_all: pd.DataFrame):
 
     st.altair_chart(chart, use_container_width=True)
 
-def render_hcmc_weekly_pattern(route_id: str, routes_geo_all: pd.DataFrame):
-    """
-    Hiển thị 'heatmap' mẫu hình kẹt xe theo giờ & thứ trong tuần
-    cho một tuyến HCMC, dạng bảng màu (pandas.style).
-    """
-    out = _load_hcmc_series_for_route(route_id, routes_geo_all)
-    if out is None:
-        st.info("Không đủ dữ liệu lịch sử để hiển thị mẫu hình tuần cho tuyến này.")
-        return
-
-    s, full_name, street_name = out
-
-    df = s.to_frame(name="is_congested")
-    if df.empty:
-        st.info("Không đủ dữ liệu lịch sử để hiển thị mẫu hình tuần cho tuyến này.")
-        return
-
-    df["DateTime"] = df.index
-    df["hour"] = df["DateTime"].dt.hour
-    df["weekday"] = df["DateTime"].dt.weekday  # 0=Mon ... 6=Sun
-
-    weekday_map = {
-        0: "Thứ 2",
-        1: "Thứ 3",
-        2: "Thứ 4",
-        3: "Thứ 5",
-        4: "Thứ 6",
-        5: "Thứ 7",
-        6: "Chủ nhật",
-    }
-    df["weekday_label"] = df["weekday"].map(weekday_map)
-
-    # Nhóm theo (weekday_label, hour) để lấy tỉ lệ kẹt trung bình
-    grp = (
-        df.groupby(["weekday_label", "hour"], as_index=False)["is_congested"]
-        .mean()
-    )
-    if grp.empty:
-        st.info("Không đủ dữ liệu lịch sử để hiển thị mẫu hình tuần cho tuyến này.")
-        return
-
-    grp["CongestionPct"] = (grp["is_congested"] * 100.0).round(1)
-    grp["HourStr"] = grp["hour"].astype(int).astype(str).str.zfill(2) + ":00"
-
-    st.subheader("Mẫu hình kẹt xe trong tuần theo giờ")
-    st.markdown(
-        "Màu càng đỏ = tuyến càng thường xuyên kẹt tại khung giờ đó "
-        "(tính theo lịch sử trong tập dữ liệu HCMC)."
-    )
-
-    # Pivot thành bảng 7 x 24 (thứ x giờ)
-    pivot = grp.pivot_table(
-        index="weekday_label",
-        columns="HourStr",
-        values="CongestionPct",
-        aggfunc="mean",
-    )
-
-    # Sắp xếp thứ theo đúng thứ tự
-    order_idx = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"]
-    pivot = pivot.reindex(order_idx)
-
-    # Sắp xếp giờ theo thứ tự thời gian
-    pivot = pivot.reindex(sorted(pivot.columns), axis=1)
-
-    # Đảm bảo giá trị là float (NaN chuẩn)
-    pivot_float = pivot.astype("float")
-
-    # Hàm style riêng cho ô không có dữ liệu
-    def style_na(v):
-        if pd.isna(v):
-            # nền trắng, chữ xám nhạt (có thể đổi 'No data' tùy thích)
-            return "background-color: #ffffff; color: #999999;"
-        return ""
-
-    styled = (
-        pivot_float.style
-        # tô heatmap cho các ô có số
-        .background_gradient(cmap="RdYlGn_r", axis=None)
-        # format số, ô NaN thì để trống hoặc ghi 'None' tùy bạn
-        .format("{:.1f}", na_rep="None")   # hoặc na_rep="" nếu muốn ô trống
-        # override lại style cho ô NaN (đặt sau background_gradient để đè màu)
-        .applymap(style_na)
-    )
-
-    st.dataframe(styled, use_container_width=True)
-
-
-# =====================================================
-# HCMC DISTRICT HELPERS (Roadmap Assistant)
-# =====================================================
-
-
 def _flatten_districts(value) -> list[str]:
     if isinstance(value, list):
         return [str(v).strip() for v in value if str(v).strip()]
@@ -2117,8 +2024,6 @@ def main():
 
         # 2) Trợ lý chọn giờ đi đường (dựa trên lịch sử)
         render_hcmc_departure_advisor(route_id, routes_geo_all)
-        # 3) Heatmap mẫu hình cả tuần
-        render_hcmc_weekly_pattern(route_id, routes_geo_all)
         st.markdown("---")
         render_hcmc_eval_summary_for_route(route_id)
         return
