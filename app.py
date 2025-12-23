@@ -24,6 +24,7 @@ from modules.model_utils import (
     shift_forecast_to_today,
 )
 from modules.model_manager import load_model_context
+from modules.predict_cache import ensure_forecast_cache, get_default_file_name
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # =========================
@@ -1581,6 +1582,7 @@ def main():
     RID2IDX = None
     LOOKBACK = None
     HORIZON = None
+    zone_for_model = None
 
     district_report = None
 
@@ -2015,6 +2017,19 @@ def main():
         st.info("👆 Hãy chọn một tuyến ở sidebar hoặc click vào marker trên bản đồ để xem forecast chi tiết.")
         return
 
+    ext_path = None
+    if city and city != "HoChiMinh":
+        zone_for_data = zone if zone not in (None, "(All)") else (zone_for_model or zone)
+        file_name = get_default_file_name(city, zone_for_data, route_id)
+        if file_name:
+            ext_path = ensure_forecast_cache(
+                city=city,
+                zone=zone_for_data,
+                route_id=route_id,
+                file_name=file_name,
+                st_module=st,
+            )
+
     # HCMC: dùng GRU congestion riêng, không dùng pipeline Vehicles/h như I-94/Fremont
     if city == "HoChiMinh":
         # 1) Dự báo 2 giờ tới cho tuyến đang chọn
@@ -2031,13 +2046,26 @@ def main():
     # ====================================
     # 6) LOAD FULL DATA FOR ROUTE
     # ====================================
-    df_full = load_slice(
-        city=city,
-        zone=None if zone == "(All)" else zone,
-        routes=[route_id],
-        start_dt=None,
-        end_dt=None,
-    )
+    df_full = pd.DataFrame()
+    zone_for_data = zone if zone not in (None, "(All)") else (zone_for_model or zone)
+
+    if ext_path is not None and ext_path.exists():
+        df_full = pd.read_parquet(ext_path)
+        if not df_full.empty:
+            df_full = df_full[df_full["RouteId"].astype(str) == str(route_id)]
+            dt = pd.to_datetime(df_full["DateTime"], utc=True, errors="coerce")
+            df_full["DateTime"] = dt.dt.tz_convert(None)
+            df_full["Vehicles"] = pd.to_numeric(df_full["Vehicles"], errors="coerce")
+            df_full = df_full.dropna(subset=["DateTime", "Vehicles"])
+
+    if df_full.empty:
+        df_full = load_slice(
+            city=city,
+            zone=None if zone_for_data == "(All)" else zone_for_data,
+            routes=[route_id],
+            start_dt=None,
+            end_dt=None,
+        )
 
     if df_full.empty:
         # st.error("⚠️ Không đọc được dữ liệu history cho route này.")
