@@ -1956,14 +1956,22 @@ def main():
                 ),
                 axis=1,
             )
+            df_high_display = df_high_display.rename(
+                columns={
+                    "p_peak (%)": "Xác suất tắc nghẽn cao nhất (%)",
+                    "level": "Mức độ kẹt",
+                    "t_peak": "Thời điểm",
+                    "p_mean (%)": "Xác suất tắc trung bình (%)",
+                }
+            )
             df_high_display = df_high_display[
                 [
                     "Tuyến (mở dự báo)",
                     "route_id",
-                    "p_peak (%)",
-                    "level",
-                    "t_peak",
-                    "p_mean (%)",
+                    "Xác suất tắc nghẽn cao nhất (%)",
+                    "Mức độ kẹt",
+                    "Thời điểm",
+                    "Xác suất tắc trung bình (%)",
                 ]
             ]
             displayed_high_ids = set(df_high_display["route_id"].tolist())
