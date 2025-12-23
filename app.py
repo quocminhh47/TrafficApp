@@ -2420,7 +2420,8 @@ def main():
                             height=320,
                             title=f"Dự báo cho {vn_weekday_label(day_start)}",
                         )
-        st.altair_chart(chart, use_container_width=True)
+
+                        st.altair_chart(chart, use_container_width=True)
 
     # ====================================
     # 8) DAILY TRAFFIC – 3 THÁNG GẦN NHẤT
