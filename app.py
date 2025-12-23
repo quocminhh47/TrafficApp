@@ -770,7 +770,7 @@ def render_hcmc_congestion_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
     def level_from_p(p: float) -> str:
         if p >= 0.7:
             return "high"
-        elif p >= 0.4:
+        elif p > 0.3:
             return "medium"
         return "low"
 
@@ -970,12 +970,23 @@ def render_hcmc_congestion_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
     tbl = prob_pct.to_frame().T
     tbl.index = ["Mức độ kẹt xe (%)"]
 
-    styled_tbl = (
-        tbl.style
-        .format("{:,.1f}", na_rep="-")
-        .background_gradient(axis=1, cmap="RdYlGn_r")
-        .highlight_max(axis=1, color="#8B0000")
-    )
+    def prob_cell_style(val: float) -> str:
+        if pd.isna(val):
+            return "background-color: #f7f7f7; color: #666"
+
+        color = "#006400"  # low
+        if val >= 70:
+            color = "#8B0000"  # high
+            text_color = "#f7f7f7"
+        elif val > 30:
+            color = "#FFD700"  # medium
+            text_color = "#000000"
+        else:
+            text_color = "#f7f7f7"
+
+        return f"background-color: {color}; color: {text_color}"
+
+    styled_tbl = tbl.style.format("{:,.1f}", na_rep="-").applymap(prob_cell_style)
 
     st.dataframe(styled_tbl, use_container_width=True, height=80)
 
