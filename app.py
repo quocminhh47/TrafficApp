@@ -24,6 +24,7 @@ from modules.model_utils import (
     shift_forecast_to_today,
 )
 from modules.model_manager import load_model_context
+from modules.predict_cache import ensure_forecast_cache, get_default_file_name
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # =========================
@@ -769,7 +770,7 @@ def render_hcmc_congestion_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
     def level_from_p(p: float) -> str:
         if p >= 0.7:
             return "high"
-        elif p >= 0.4:
+        elif p > 0.3:
             return "medium"
         return "low"
 
@@ -969,12 +970,23 @@ def render_hcmc_congestion_next_2h(route_id: str, routes_geo_all: pd.DataFrame):
     tbl = prob_pct.to_frame().T
     tbl.index = ["Mức độ kẹt xe (%)"]
 
-    styled_tbl = (
-        tbl.style
-        .format("{:,.1f}", na_rep="-")
-        .background_gradient(axis=1, cmap="RdYlGn_r")
-        .highlight_max(axis=1, color="#8B0000")
-    )
+    def prob_cell_style(val: float) -> str:
+        if pd.isna(val):
+            return "background-color: #f7f7f7; color: #666"
+
+        color = "#006400"  # low
+        if val >= 70:
+            color = "#8B0000"  # high
+            text_color = "#f7f7f7"
+        elif val > 30:
+            color = "#FFD700"  # medium
+            text_color = "#000000"
+        else:
+            text_color = "#f7f7f7"
+
+        return f"background-color: {color}; color: {text_color}"
+
+    styled_tbl = tbl.style.format("{:,.1f}", na_rep="-").applymap(prob_cell_style)
 
     st.dataframe(styled_tbl, use_container_width=True, height=80)
 
@@ -1171,99 +1183,6 @@ def render_hcmc_departure_advisor(route_id: str, routes_geo_all: pd.DataFrame):
     )
 
     st.altair_chart(chart, use_container_width=True)
-
-def render_hcmc_weekly_pattern(route_id: str, routes_geo_all: pd.DataFrame):
-    """
-    Hiển thị 'heatmap' mẫu hình kẹt xe theo giờ & thứ trong tuần
-    cho một tuyến HCMC, dạng bảng màu (pandas.style).
-    """
-    out = _load_hcmc_series_for_route(route_id, routes_geo_all)
-    if out is None:
-        st.info("Không đủ dữ liệu lịch sử để hiển thị mẫu hình tuần cho tuyến này.")
-        return
-
-    s, full_name, street_name = out
-
-    df = s.to_frame(name="is_congested")
-    if df.empty:
-        st.info("Không đủ dữ liệu lịch sử để hiển thị mẫu hình tuần cho tuyến này.")
-        return
-
-    df["DateTime"] = df.index
-    df["hour"] = df["DateTime"].dt.hour
-    df["weekday"] = df["DateTime"].dt.weekday  # 0=Mon ... 6=Sun
-
-    weekday_map = {
-        0: "Thứ 2",
-        1: "Thứ 3",
-        2: "Thứ 4",
-        3: "Thứ 5",
-        4: "Thứ 6",
-        5: "Thứ 7",
-        6: "Chủ nhật",
-    }
-    df["weekday_label"] = df["weekday"].map(weekday_map)
-
-    # Nhóm theo (weekday_label, hour) để lấy tỉ lệ kẹt trung bình
-    grp = (
-        df.groupby(["weekday_label", "hour"], as_index=False)["is_congested"]
-        .mean()
-    )
-    if grp.empty:
-        st.info("Không đủ dữ liệu lịch sử để hiển thị mẫu hình tuần cho tuyến này.")
-        return
-
-    grp["CongestionPct"] = (grp["is_congested"] * 100.0).round(1)
-    grp["HourStr"] = grp["hour"].astype(int).astype(str).str.zfill(2) + ":00"
-
-    st.subheader("Mẫu hình kẹt xe trong tuần theo giờ")
-    st.markdown(
-        "Màu càng đỏ = tuyến càng thường xuyên kẹt tại khung giờ đó "
-        "(tính theo lịch sử trong tập dữ liệu HCMC)."
-    )
-
-    # Pivot thành bảng 7 x 24 (thứ x giờ)
-    pivot = grp.pivot_table(
-        index="weekday_label",
-        columns="HourStr",
-        values="CongestionPct",
-        aggfunc="mean",
-    )
-
-    # Sắp xếp thứ theo đúng thứ tự
-    order_idx = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"]
-    pivot = pivot.reindex(order_idx)
-
-    # Sắp xếp giờ theo thứ tự thời gian
-    pivot = pivot.reindex(sorted(pivot.columns), axis=1)
-
-    # Đảm bảo giá trị là float (NaN chuẩn)
-    pivot_float = pivot.astype("float")
-
-    # Hàm style riêng cho ô không có dữ liệu
-    def style_na(v):
-        if pd.isna(v):
-            # nền trắng, chữ xám nhạt (có thể đổi 'No data' tùy thích)
-            return "background-color: #ffffff; color: #999999;"
-        return ""
-
-    styled = (
-        pivot_float.style
-        # tô heatmap cho các ô có số
-        .background_gradient(cmap="RdYlGn_r", axis=None)
-        # format số, ô NaN thì để trống hoặc ghi 'None' tùy bạn
-        .format("{:.1f}", na_rep="None")   # hoặc na_rep="" nếu muốn ô trống
-        # override lại style cho ô NaN (đặt sau background_gradient để đè màu)
-        .applymap(style_na)
-    )
-
-    st.dataframe(styled, use_container_width=True)
-
-
-# =====================================================
-# HCMC DISTRICT HELPERS (Roadmap Assistant)
-# =====================================================
-
 
 def _flatten_districts(value) -> list[str]:
     if isinstance(value, list):
@@ -1674,6 +1593,7 @@ def main():
     RID2IDX = None
     LOOKBACK = None
     HORIZON = None
+    zone_for_model = None
 
     district_report = None
 
@@ -2036,14 +1956,22 @@ def main():
                 ),
                 axis=1,
             )
+            df_high_display = df_high_display.rename(
+                columns={
+                    "p_peak (%)": "Xác suất tắc nghẽn cao nhất (%)",
+                    "level": "Mức độ kẹt",
+                    "t_peak": "Thời điểm",
+                    "p_mean (%)": "Xác suất tắc trung bình (%)",
+                }
+            )
             df_high_display = df_high_display[
                 [
                     "Tuyến (mở dự báo)",
                     "route_id",
-                    "p_peak (%)",
-                    "level",
-                    "t_peak",
-                    "p_mean (%)",
+                    "Xác suất tắc nghẽn cao nhất (%)",
+                    "Mức độ kẹt",
+                    "Thời điểm",
+                    "Xác suất tắc trung bình (%)",
                 ]
             ]
             displayed_high_ids = set(df_high_display["route_id"].tolist())
@@ -2108,6 +2036,19 @@ def main():
         st.info("👆 Hãy chọn một tuyến ở sidebar hoặc click vào marker trên bản đồ để xem forecast chi tiết.")
         return
 
+    ext_path = None
+    if city and city != "HoChiMinh":
+        zone_for_data = zone if zone not in (None, "(All)") else (zone_for_model or zone)
+        file_name = get_default_file_name(city, zone_for_data, route_id)
+        if file_name:
+            ext_path = ensure_forecast_cache(
+                city=city,
+                zone=zone_for_data,
+                route_id=route_id,
+                file_name=file_name,
+                st_module=st,
+            )
+
     # HCMC: dùng GRU congestion riêng, không dùng pipeline Vehicles/h như I-94/Fremont
     if city == "HoChiMinh":
         # 1) Dự báo 2 giờ tới cho tuyến đang chọn
@@ -2117,8 +2058,6 @@ def main():
 
         # 2) Trợ lý chọn giờ đi đường (dựa trên lịch sử)
         render_hcmc_departure_advisor(route_id, routes_geo_all)
-        # 3) Heatmap mẫu hình cả tuần
-        render_hcmc_weekly_pattern(route_id, routes_geo_all)
         st.markdown("---")
         render_hcmc_eval_summary_for_route(route_id)
         return
@@ -2126,13 +2065,26 @@ def main():
     # ====================================
     # 6) LOAD FULL DATA FOR ROUTE
     # ====================================
-    df_full = load_slice(
-        city=city,
-        zone=None if zone == "(All)" else zone,
-        routes=[route_id],
-        start_dt=None,
-        end_dt=None,
-    )
+    df_full = pd.DataFrame()
+    zone_for_data = zone if zone not in (None, "(All)") else (zone_for_model or zone)
+
+    if ext_path is not None and ext_path.exists():
+        df_full = pd.read_parquet(ext_path)
+        if not df_full.empty:
+            df_full = df_full[df_full["RouteId"].astype(str) == str(route_id)]
+            dt = pd.to_datetime(df_full["DateTime"], utc=True, errors="coerce")
+            df_full["DateTime"] = dt.dt.tz_convert(None)
+            df_full["Vehicles"] = pd.to_numeric(df_full["Vehicles"], errors="coerce")
+            df_full = df_full.dropna(subset=["DateTime", "Vehicles"])
+
+    if df_full.empty:
+        df_full = load_slice(
+            city=city,
+            zone=None if zone_for_data == "(All)" else zone_for_data,
+            routes=[route_id],
+            start_dt=None,
+            end_dt=None,
+        )
 
     if df_full.empty:
         # st.error("⚠️ Không đọc được dữ liệu history cho route này.")
@@ -2487,7 +2439,8 @@ def main():
                             height=320,
                             title=f"Dự báo cho {vn_weekday_label(day_start)}",
                         )
-        st.altair_chart(chart, use_container_width=True)
+
+                        st.altair_chart(chart, use_container_width=True)
 
     # ====================================
     # 8) DAILY TRAFFIC – 3 THÁNG GẦN NHẤT
@@ -2795,6 +2748,82 @@ def main():
                         st.dataframe(df_show, use_container_width=True)
             else:
                 st.info("Không có series nào (GRU/RNN/LSTM/ARIMA/SARIMA) để hiển thị.")
+
+            # ==== Lưu lượng trung bình theo ngày trong tuần ====
+            df_weekday = (
+                df_eval[["Date", "DailyActual"]]
+                .dropna(subset=["Date", "DailyActual"])
+                .copy()
+            )
+
+            if not df_weekday.empty:
+                df_weekday["Weekday"] = (
+                    pd.to_datetime(df_weekday["Date"]).dt.dayofweek
+                )
+                weekday_labels = {
+                    0: "Thứ 2",
+                    1: "Thứ 3",
+                    2: "Thứ 4",
+                    3: "Thứ 5",
+                    4: "Thứ 6",
+                    5: "Thứ 7",
+                    6: "Chủ nhật",
+                }
+                df_weekday["WeekdayLabel"] = df_weekday["Weekday"].map(
+                    weekday_labels
+                )
+
+                df_weekday_avg = (
+                    df_weekday
+                    .groupby(["Weekday", "WeekdayLabel"], as_index=False)[
+                        "DailyActual"
+                    ]
+                    .mean()
+                    .rename(columns={"DailyActual": "VehiclesPerDay"})
+                    .sort_values("Weekday")
+                )
+                df_weekday_avg["VehiclesPerDay"] = df_weekday_avg[
+                    "VehiclesPerDay"
+                ].round(2)
+
+                st.markdown(
+                    "#### Lưu lượng trung bình theo ngày trong tuần (3 tháng gần nhất)"
+                )
+                st.caption(
+                    f"Khoảng dữ liệu: {df_eval['Date'].min().date()} → {df_eval['Date'].max().date()}"
+                )
+
+                base_weekday = alt.Chart(df_weekday_avg).encode(
+                    x=alt.X(
+                        "WeekdayLabel:O",
+                        title="Ngày trong tuần",
+                        sort=list(weekday_labels.values()),
+                    ),
+                    y=alt.Y(
+                        "VehiclesPerDay:Q",
+                        title="Lưu lượng trung bình (vehicles/ngày)",
+                    ),
+                )
+
+                chart_weekday = alt.layer(
+                    base_weekday.mark_bar(),
+                    base_weekday.mark_text(
+                        dy=-6, color="#111", fontWeight="bold"
+                    ).encode(
+                        text=alt.Text("VehiclesPerDay:Q", format=",.1f")
+                    ),
+                ).encode(
+                    tooltip=[
+                        alt.Tooltip("WeekdayLabel:N", title="Ngày"),
+                        alt.Tooltip(
+                            "VehiclesPerDay:Q",
+                            title="Lưu lượng trung bình",
+                            format=",.2f",
+                        ),
+                    ]
+                ).properties(height=320)
+
+                st.altair_chart(chart_weekday, use_container_width=True)
 
             # ==== Metrics tổng 3 tháng cho từng model (nếu có cột) ====
             metrics_rows = []
