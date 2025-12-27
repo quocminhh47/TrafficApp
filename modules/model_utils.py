@@ -497,10 +497,19 @@ def shift_forecast_to_today(
 
     df["DateTime"] = new_datetimes
 
+    # Chỉ giữ trong cửa sổ [target_today, target_today + 7 ngày)
+    # để tránh lặp lại cùng weekday của tuần sau.
+    window_end = target_today + pd.Timedelta(days=7)
+    df = df[(df["DateTime"] >= target_today) & (df["DateTime"] < window_end)]
+
     # Bỏ các mốc đã qua (nếu muốn)
     if drop_past_hours:
         now_floor = pd.Timestamp.now().floor("H")
         df = df[df["DateTime"] >= now_floor]
+
+    # Nếu vì lý do gì đó vẫn còn trùng DateTime (vd: nhiều tuần map về cùng ngày),
+    # giữ giá trị đầu tiên để tránh duplicate khi hiển thị.
+    df = df.drop_duplicates(subset=["DateTime"], keep="first")
 
     # Dọn cột phụ
     df = df.drop(columns=["wd", "time"])
