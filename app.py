@@ -2072,6 +2072,11 @@ def main():
         df_full = pd.read_parquet(ext_path)
         if not df_full.empty:
             df_full = df_full[df_full["RouteId"].astype(str) == str(route_id)]
+
+            # Chỉ giữ dữ liệu quan sát thật, bỏ các dòng forecast (is_forecast=True)
+            if "is_forecast" in df_full.columns:
+                df_full = df_full[df_full["is_forecast"] != True]
+
             dt = pd.to_datetime(df_full["DateTime"], utc=True, errors="coerce")
             df_full["DateTime"] = dt.dt.tz_convert(None)
             df_full["Vehicles"] = pd.to_numeric(df_full["Vehicles"], errors="coerce")
@@ -2341,12 +2346,16 @@ def main():
                         # Phòng trường hợp vẫn còn trùng cột (rất hiếm) -> bỏ bớt bản trùng
                         tbl = tbl.loc[:, ~tbl.columns.duplicated()]
 
-                        styled_tbl = (
-                            tbl.style
-                            .format("{:,.0f}", na_rep="-")  # hiển thị int, có phân cách
-                            .background_gradient(axis=1, cmap="YlOrRd")  # thấp = vàng nhạt, cao = đỏ
-                            .highlight_max(axis=1, color="#ff4b4b")  # giờ cao điểm nhất tô đỏ hẳn
-                        )
+                        def traffic_level_color(v: float) -> str:
+                            if pd.isna(v):
+                                return "background-color: #f7f7f7; color: #666"
+                            if v >= q_high:
+                                return "background-color: #CC0000; color: #f7f7f7"  # đỏ
+                            if v <= q_low:
+                                return "background-color: #008000; color: #f7f7f7"  # xanh lá
+                            return "background-color: #FFD700; color: #000000"  # vàng
+
+                        styled_tbl = tbl.style.format("{:,.0f}", na_rep="-").applymap(traffic_level_color)
 
                         st.dataframe(styled_tbl, use_container_width=True, height=70)
 
@@ -2413,7 +2422,7 @@ def main():
                         )
                         color_scale = alt.Scale(
                             domain=["Thưa thớt", "Trung bình", "Rất đông"],
-                            range=["#008000", "#0000ff", "#CC0000"],
+                            range=["#008000", "#FFD700", "#CC0000"],  # xanh – vàng – đỏ
                         )
                         points = base.mark_point(size=70).encode(
                             y="PredictedVehicles:Q",
