@@ -2072,6 +2072,11 @@ def main():
         df_full = pd.read_parquet(ext_path)
         if not df_full.empty:
             df_full = df_full[df_full["RouteId"].astype(str) == str(route_id)]
+
+            # Chỉ giữ dữ liệu quan sát thật, bỏ các dòng forecast (is_forecast=True)
+            if "is_forecast" in df_full.columns:
+                df_full = df_full[df_full["is_forecast"] != True]
+
             dt = pd.to_datetime(df_full["DateTime"], utc=True, errors="coerce")
             df_full["DateTime"] = dt.dt.tz_convert(None)
             df_full["Vehicles"] = pd.to_numeric(df_full["Vehicles"], errors="coerce")
