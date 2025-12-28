@@ -2248,6 +2248,10 @@ def main():
                         # Chuẩn hóa về chính xác từng giờ (trong trường hợp có phút lẻ)
                         df_day["DateTime"] = df_day["DateTime"].dt.floor("H")
 
+                        # Ngưỡng phân loại mức lưu lượng (20% thấp, 80% cao)
+                        q_low = df_day["PredictedVehicles"].quantile(0.2)
+                        q_high = df_day["PredictedVehicles"].quantile(0.8)
+
                         # Chỉ gộp các cột số (Vehicles, PredictedVehicles, Pred_GRU, Pred_LSTM, ...)
                         num_cols = df_day.select_dtypes(include="number").columns.tolist()
                         # nếu có cột không muốn gộp thì bỏ ra khỏi num_cols ở đây
@@ -2346,12 +2350,16 @@ def main():
                         # Phòng trường hợp vẫn còn trùng cột (rất hiếm) -> bỏ bớt bản trùng
                         tbl = tbl.loc[:, ~tbl.columns.duplicated()]
 
-                        styled_tbl = (
-                            tbl.style
-                            .format("{:,.0f}", na_rep="-")  # hiển thị int, có phân cách
-                            .background_gradient(axis=1, cmap="YlOrRd")  # thấp = vàng nhạt, cao = đỏ
-                            .highlight_max(axis=1, color="#ff4b4b")  # giờ cao điểm nhất tô đỏ hẳn
-                        )
+                        def traffic_level_color(v: float) -> str:
+                            if pd.isna(v):
+                                return "background-color: #f7f7f7; color: #666"
+                            if v >= q_high:
+                                return "background-color: #CC0000; color: #f7f7f7"  # đỏ
+                            if v <= q_low:
+                                return "background-color: #008000; color: #f7f7f7"  # xanh lá
+                            return "background-color: #FFD700; color: #000000"  # vàng
+
+                        styled_tbl = tbl.style.format("{:,.0f}", na_rep="-").applymap(traffic_level_color)
 
                         st.dataframe(styled_tbl, use_container_width=True, height=70)
 
@@ -2396,9 +2404,6 @@ def main():
 
                         df_day = df_day.copy()
 
-                        q_low = df_day["PredictedVehicles"].quantile(0.2)
-                        q_high = df_day["PredictedVehicles"].quantile(0.8)
-
                         def level_label(v):
                             if v >= q_high:
                                 return "Rất đông"
@@ -2418,7 +2423,7 @@ def main():
                         )
                         color_scale = alt.Scale(
                             domain=["Thưa thớt", "Trung bình", "Rất đông"],
-                            range=["#008000", "#0000ff", "#CC0000"],
+                            range=["#008000", "#FFD700", "#CC0000"],  # xanh – vàng – đỏ
                         )
                         points = base.mark_point(size=70).encode(
                             y="PredictedVehicles:Q",
