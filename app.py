@@ -2248,6 +2248,10 @@ def main():
                         # Chuẩn hóa về chính xác từng giờ (trong trường hợp có phút lẻ)
                         df_day["DateTime"] = df_day["DateTime"].dt.floor("H")
 
+                        # Ngưỡng phân loại mức lưu lượng (20% thấp, 80% cao)
+                        q_low = df_day["PredictedVehicles"].quantile(0.2)
+                        q_high = df_day["PredictedVehicles"].quantile(0.8)
+
                         # Chỉ gộp các cột số (Vehicles, PredictedVehicles, Pred_GRU, Pred_LSTM, ...)
                         num_cols = df_day.select_dtypes(include="number").columns.tolist()
                         # nếu có cột không muốn gộp thì bỏ ra khỏi num_cols ở đây
@@ -2399,9 +2403,6 @@ def main():
                             )
 
                         df_day = df_day.copy()
-
-                        q_low = df_day["PredictedVehicles"].quantile(0.2)
-                        q_high = df_day["PredictedVehicles"].quantile(0.8)
 
                         def level_label(v):
                             if v >= q_high:
